@@ -15,9 +15,21 @@ type IconSymbolName = keyof typeof MAPPING;
  */
 const MAPPING = {
   'house.fill': 'home',
+  'house': 'home', // Add the outline version too
   'paperplane.fill': 'send',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  // Add your tab bar icons
+  'list.bullet': 'list', // For Order tab
+  'cart.fill': 'shopping-cart', // For Cart tab (filled)
+  'cart': 'shopping-cart', // For Cart tab (outline)
+  'person.circle.fill': 'person', // For Profile tab (filled)
+  'person.circle': 'person-outline', // For Profile tab (outline)
+  // Alternative mappings if you prefer different icons:
+  'bag.fill': 'shopping-bag',
+  'bag': 'shopping-bag',
+  'person.fill': 'person',
+  'person': 'person-outline',
 } as IconMapping;
 
 /**
