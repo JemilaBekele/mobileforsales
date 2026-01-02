@@ -10,6 +10,12 @@ const ProfileLayout = () => {
                     headerShown: false,
                 }}
             />
+                <Stack.Screen
+                name="Waitlists"
+                options={{
+                    headerShown: false,
+                }}
+            />
        
         </Stack>
     );

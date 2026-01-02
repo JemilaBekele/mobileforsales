@@ -1321,6 +1321,7 @@ const CartListViewScreen = () => {
       setShowDiscountNotesModal(false);
       Alert.alert('Success', 'Discount and notes applied to cart');
     } catch (error: any) {
+      console.log(error)
       Alert.alert('Error', error.message || 'Failed to apply discount and notes');
     }
   };
@@ -1367,10 +1368,8 @@ const CartListViewScreen = () => {
           'Success', 
           `Successfully added ${result.data.successfulItems} item(s) to waitlist!`,
           [
-            {
-              text: 'View Waitlist',
-              onPress: () => router.push('/profile/Waitlists'),
-            }
+                         { text: 'OK', style: 'cancel' },
+
           ]
         );
         
@@ -1528,7 +1527,7 @@ const CartListViewScreen = () => {
                       setSelectedCustomerId('');
                       setDiscount('');
                       setNotes('');
-                      router.push('/');
+                      router.push('/home');
                     },
                   },
                 ]
@@ -1634,7 +1633,7 @@ const CartListViewScreen = () => {
                       borderWidth={1}
                       borderRadius="$4"
                       pressStyle={{ backgroundColor: "$orange10" }}
-                      onPress={() => router.push('/')}
+                      onPress={() => router.push('/home')}
                     >
                       <Text color="white" fontWeight="600">Start Shopping</Text>
                     </Button>
@@ -1718,34 +1717,7 @@ const CartListViewScreen = () => {
                       </XStack>
                     )}
 
-                    {/* Select Mode Toggle */}
-                    <XStack justifyContent="space-between" alignItems="center" width="100%" marginTop="$2">
-                      <Text fontSize="$3" fontWeight="600" color="$orange11">
-                        Select Items for Waitlist:
-                      </Text>
-                      <Button
-                        size="$2"
-                        backgroundColor={selectMode ? "$blue9" : "$orange3"}
-                        borderColor={selectMode ? "$blue10" : "$orange6"}
-                        borderWidth={1}
-                        borderRadius="$3"
-                        onPress={() => {
-                          setSelectMode(!selectMode);
-                          if (!selectMode) {
-                            setSelectedItems([]);
-                          }
-                        }}
-                        pressStyle={{ backgroundColor: selectMode ? "$blue10" : "$orange4" }}
-                      >
-                        <Text 
-                          color={selectMode ? "white" : "$orange11"} 
-                          fontWeight="600" 
-                          fontSize="$2"
-                        >
-                          {selectMode ? 'Cancel Selection' : 'Select Items'}
-                        </Text>
-                      </Button>
-                    </XStack>
+                   
 
                     {/* Selected items count */}
                     {selectMode && selectedItems.length > 0 && (

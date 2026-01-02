@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
-import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useState } from 'react';
+import { useRouter } from 'expo-router';
 import {
   Alert,
   RefreshControl,
@@ -19,28 +18,20 @@ import {
   H3,
   Image,
 } from 'tamagui';
-import type { AppDispatch } from '@/(redux)/store';
 
-// Waitlist Redux imports
-import {
-  fetchMyWaitlists,
-  removeWaitlistItem,
-  convertWaitlistToCartAction,
-  selectWaitlistItems,
-  selectWaitlistLoading,
-  selectWaitlistError,
-  selectConversionLoading,
-  clearError,
-  removeWaitlistItemOptimistic,
-  selectWaitlistItemCount,
-  selectLastConversionResult,
-  selectTotalConvertedItems,
-} from '@/(redux)/WaitlistCart';
+// React Query imports for Waitlist
+import { 
+  useWaitlistItems,
+  useRemoveFromWaitlist,
+  useConvertWaitlistToCart,
+  type WaitlistItem,
+  
+} from '@/(services)/api/WaitlistCart';
 
-// Types
-import type { WaitlistItem } from '@/(services)/api/WaitlistCart';
-import { clearCartAction, clearUserCart, fetchMyCart, selectCart, selectCartCustomerId } from '@/(redux)/CART';
+import { useDispatch, useSelector } from 'react-redux';
+import { clearCartAction, selectCart, selectCartCustomerId } from '@/(redux)/CART';
 import { selectCustomers, setCurrentCustomer } from '@/(redux)/customer';
+// import { useQueryClient } from '@tanstack/react-query';
 
 const BACKEND_URL = "https://ordere.net";
 
@@ -54,9 +45,18 @@ export const normalizeImagePath = (path?: string) => {
   return `${BACKEND_URL}/${cleanPath}`;
 };
 
-// Helper functions for safe property access
+// FIXED: Updated helper functions to use the correct quantity
+// FIXED: Updated helper functions to use the CART ITEM quantity, not waitlist quantity
 const getItemQuantity = (item: WaitlistItem): number => {
-  return item.cartItem?.quantity || 0;
+  // Always use cartItem quantity, not the waitlist item quantity
+  // The waitlist item quantity is always 1, but cartItem has the actual quantity
+
+  if (item.cartItem?.quantity !== undefined && item.cartItem?.quantity !== null) {
+    return Number(item.cartItem.quantity);
+  }
+ 
+  // Fallback if cartItem is not available
+  return item.quantity || 1;
 };
 
 const getItemUnitPrice = (item: WaitlistItem): number => {
@@ -68,6 +68,7 @@ const getItemTotalPrice = (item: WaitlistItem): number => {
   const unitPrice = getItemUnitPrice(item);
   return quantity * unitPrice;
 };
+
 
 // Group waitlist items by customer - CLIENT-SIDE GROUPING with safety checks
 const groupWaitlistByCustomer = (items: WaitlistItem[] | undefined): Record<string, WaitlistItem[]> => {
@@ -274,9 +275,6 @@ const CustomerWaitlistSection = ({
                           <XStack space="$3">
                             <Text fontSize="$2" color="$orange10">
                               Qty: {quantity}
-                            </Text>
-                            <Text fontSize="$2" color="$orange10">
-                              Price: ${getItemUnitPrice(item).toFixed(2)}
                             </Text>
                             {shop && (
                               <Text fontSize="$2" color="$orange10">
@@ -752,16 +750,24 @@ const RemoveAllConfirmationModal = ({
 
 const WaitlistScreen = () => {
   const router = useRouter();
-  const dispatch = useDispatch<AppDispatch>();
+  const dispatch = useDispatch();
+  // const queryClient = useQueryClient();
+
+  // React Query hooks
+  const { 
+    data: waitlistData, 
+    isLoading: waitlistLoading, 
+    error: waitlistError,
+    refetch: refetchWaitlists
+  } = useWaitlistItems();
+  
+  const removeMutation = useRemoveFromWaitlist();
+  const convertMutation = useConvertWaitlistToCart();
 
   // Redux state
-  const waitlistItems = useSelector(selectWaitlistItems);
-  const loading = useSelector(selectWaitlistLoading);
-  const error = useSelector(selectWaitlistError);
-  const conversionLoading = useSelector(selectConversionLoading);
-  const itemCount = useSelector(selectWaitlistItemCount);
-  const lastConversionResult = useSelector(selectLastConversionResult);
-  const totalConvertedItems = useSelector(selectTotalConvertedItems);
+  const cart = useSelector(selectCart);
+  const cartCustomerId = useSelector(selectCartCustomerId);
+  const customers = useSelector(selectCustomers);
 
   // Local state
   const [refreshing, setRefreshing] = useState(false);
@@ -769,77 +775,32 @@ const WaitlistScreen = () => {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showRemoveModal, setShowRemoveModal] = useState(false);
   const [showRemoveAllModal, setShowRemoveAllModal] = useState(false);
-  const [removingItemId, setRemovingItemId] = useState<string | null>(null);
   const [expandedCustomers, setExpandedCustomers] = useState<Record<string, boolean>>({});
   const [convertAllLoading, setConvertAllLoading] = useState<Record<string, boolean>>({});
   const [removeAllLoading, setRemoveAllLoading] = useState<Record<string, boolean>>({});
   const [removeAllType, setRemoveAllType] = useState<'all' | 'customer' | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
 
-  // Safely group items by customer - ensure waitlistItems is an array
+  // Safely group items by customer
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const waitlistItemsArray = Array.isArray(waitlistItems) ? waitlistItems : [];
+  const waitlistItemsArray = Array.isArray(waitlistData) ? waitlistData : [];
   const groupedByCustomer = groupWaitlistByCustomer(waitlistItemsArray);
   
   // Calculate totals with safety checks
   const totalQuantity = waitlistItemsArray.reduce((sum, item) => sum + getItemQuantity(item), 0);
   const totalValue = waitlistItemsArray.reduce((sum, item) => sum + getItemTotalPrice(item), 0);
-
-  const cart = useSelector(selectCart);
-  const cartCustomerId = useSelector(selectCartCustomerId);
-  const customers = useSelector(selectCustomers);
-
-  // Load waitlist data
-  useEffect(() => {
-    dispatch(fetchMyWaitlists());
-  }, [dispatch]);
-
-  // Refresh waitlist data when screen comes into focus
-  useFocusEffect(
-    React.useCallback(() => {
-      dispatch(fetchMyWaitlists());
-    }, [dispatch])
-  );
-
-  // Show success/error messages for bulk conversion
-  useEffect(() => {
-    if (lastConversionResult) {
-      if (lastConversionResult.success) {
-        Alert.alert(
-          'Success ✅',
-          lastConversionResult.message || `${totalConvertedItems} items converted to cart successfully`,
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                // Refresh waitlist after successful conversion
-                dispatch(fetchMyWaitlists());
-              }
-            }
-          ]
-        );
-      } else {
-        Alert.alert(
-          'Error ❌',
-          lastConversionResult.message || 'Failed to convert items to cart'
-        );
-      }
-    }
-  }, [lastConversionResult, totalConvertedItems, dispatch]);
-
-  useEffect(() => {
-    if (error) {
-      Alert.alert('Error', error);
-      dispatch(clearError());
-    }
-  }, [error, dispatch]);
-
+  const itemCount = waitlistItemsArray.length;
+  const handleback= () => {
+    router.push({
+      pathname: '/profile' as any,
+    });
+  };
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      await dispatch(fetchMyWaitlists()).unwrap();
-    } catch (error: any) {
-      console.error('Refresh error:', error);
+      await refetchWaitlists();
+    } catch  {
+      Alert.alert('Error', 'Failed to refresh waitlist');
     } finally {
       setRefreshing(false);
     }
@@ -862,11 +823,7 @@ const WaitlistScreen = () => {
     if (!selectedItem) return;
 
     try {
-      setRemovingItemId(selectedItem.id);
-      // Optimistic update
-      dispatch(removeWaitlistItemOptimistic(selectedItem.id));
-      
-      await dispatch(removeWaitlistItem(selectedItem.id)).unwrap();
+      await removeMutation.mutateAsync(selectedItem.id);
       
       setShowRemoveModal(false);
       setShowDetailModal(false);
@@ -874,10 +831,6 @@ const WaitlistScreen = () => {
       Alert.alert('Success', 'Item removed from waitlist');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to remove item from waitlist');
-      // Refresh to revert optimistic update
-      dispatch(fetchMyWaitlists());
-    } finally {
-      setRemovingItemId(null);
     }
   };
 
@@ -912,19 +865,11 @@ const WaitlistScreen = () => {
         // Remove all items from waitlist
         setRemoveAllLoading(prev => ({ ...prev, 'all': true }));
         
-        // Remove each item individually (you might want to implement a batch API)
+        // Remove each item individually
         const itemIds = waitlistItemsArray.map(item => item.id).filter(Boolean);
         
-        // Optimistic updates for all items
-        itemIds.forEach(itemId => {
-          dispatch(removeWaitlistItemOptimistic(itemId));
-        });
-        
-        // Remove all items one by one
         await Promise.all(
-          itemIds.map(itemId => 
-            dispatch(removeWaitlistItem(itemId)).unwrap()
-          )
+          itemIds.map(itemId => removeMutation.mutateAsync(itemId))
         );
         
         Alert.alert('Success', `All ${itemCount} items removed from waitlist`);
@@ -936,16 +881,8 @@ const WaitlistScreen = () => {
         const itemIds = customerItems.map(item => item.id).filter(Boolean);
         const customerName = customerItems[0]?.customer?.name || 'Customer';
         
-        // Optimistic updates for customer items
-        itemIds.forEach(itemId => {
-          dispatch(removeWaitlistItemOptimistic(itemId));
-        });
-        
-        // Remove customer items one by one
         await Promise.all(
-          itemIds.map(itemId => 
-            dispatch(removeWaitlistItem(itemId)).unwrap()
-          )
+          itemIds.map(itemId => removeMutation.mutateAsync(itemId))
         );
         
         Alert.alert('Success', `All items for ${customerName} removed from waitlist`);
@@ -955,19 +892,14 @@ const WaitlistScreen = () => {
       setRemoveAllType(null);
       setSelectedCustomerId(null);
       
-      // Refresh data
-      dispatch(fetchMyWaitlists());
-      
-    } catch (error: any) {
-      console.error('Remove all error:', error);
-      Alert.alert('Error', error.message || 'Failed to remove items');
-      // Refresh to revert optimistic updates
-      dispatch(fetchMyWaitlists());
+    } catch  {
+      Alert.alert('Error', 'Failed to remove items');
     } finally {
       // Clear all loading states
       setRemoveAllLoading({});
     }
   };
+
   const handleConvertToCart = async (itemId: string) => {
     try {
       // Get the waitlist item
@@ -1003,10 +935,7 @@ const WaitlistScreen = () => {
           return;
         }
       }
-                    dispatch(clearCartAction()); // This clears cart AND customer data
-  localStorage.removeItem('cartCustomer');
-      localStorage.removeItem('cartData');
-      sessionStorage.removeItem('cartCustomer');
+
       // If no customer mismatch or cart is empty, proceed with conversion
       await proceedWithConversion(itemId, waitlistCustomerId);
       
@@ -1018,21 +947,23 @@ const WaitlistScreen = () => {
   // Helper function to handle conversion
   const proceedWithConversion = async (itemId: string, customerId: string) => {
     try {
-      await dispatch(convertWaitlistToCartAction(itemId)).unwrap();
+      const result = await convertMutation.mutateAsync(customerId);
       
-      // After successful conversion, refresh cart to get updated customer info
-      await dispatch(fetchMyCart());
+      // After successful conversion, refresh cart
       
-      Alert.alert('Success', 'Item added to cart successfully');
+      Alert.alert('Success', result.message || 'Item added to cart successfully');
       setShowDetailModal(false);
       setSelectedItem(null);
+      
+      // Refresh waitlist data
+      refetchWaitlists();
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to add item to cart');
     }
   };
 
-  // Updated: Handle converting ALL waitlist items for a customer
-const handleConvertAllToCart = async (customerId: string) => {
+  // Handle converting ALL waitlist items for a customer
+  const handleConvertAllToCart = async (customerId: string) => {
     try {
       const customerItems = groupedByCustomer[customerId] || [];
       if (customerItems.length === 0) {
@@ -1053,22 +984,7 @@ const handleConvertAllToCart = async (customerId: string) => {
             'Please clear the cart or select the same customer.',
             [
               { text: 'OK', style: 'cancel' },
-              { 
-                text: 'Clear Cart', 
-                style: 'destructive',
-                onPress: async () => {
-                  try {
-                                        dispatch(clearCartAction()); // This clears cart AND customer data
-
-                    await dispatch(clearUserCart()).unwrap();
-                   
-                    // Now try bulk conversion
-                    await proceedWithBulkConversion(customerId, customerItems);
-                  } catch (error: any) {
-                    Alert.alert('Error', error.message || 'Failed to clear cart');
-                  }
-                }
-              }
+             
             ]
           );
           return;
@@ -1079,7 +995,6 @@ const handleConvertAllToCart = async (customerId: string) => {
       await proceedWithBulkConversion(customerId, customerItems);
       
     } catch (error: any) {
-      console.error('Bulk conversion error:', error);
       Alert.alert(
         'Error', 
         error.message || 'Failed to convert items to cart. Please try again.'
@@ -1088,45 +1003,40 @@ const handleConvertAllToCart = async (customerId: string) => {
   };
 
   // Helper function for bulk conversion
-const proceedWithBulkConversion = async (customerId: string, customerItems: WaitlistItem[]) => {
-  setConvertAllLoading(prev => ({ ...prev, [customerId]: true }));
+  const proceedWithBulkConversion = async (customerId: string, customerItems: WaitlistItem[]) => {
+    setConvertAllLoading(prev => ({ ...prev, [customerId]: true }));
 
-  try {
-    // Get customer data from waitlist items
-    const waitlistCustomer = customerItems[0]?.customer;
-    
-    // If you have a customer in context or global state, update it
-    if (waitlistCustomer) {
-      // Just set the customer ID - not the entire customer object
-      setSelectedCustomerId(customerId);
+    try {
+      const waitlistCustomer = customerItems[0]?.customer;
       
-      // Also update in Redux if needed - create a proper customer object
-      // First, find the full customer object from your customers list
-      const fullCustomer = customers.find(c => c.id === customerId);
-      
-      if (fullCustomer) {
-        dispatch(setCurrentCustomer(fullCustomer));
+      if (waitlistCustomer) {
+        setSelectedCustomerId(customerId);
+        
+        const fullCustomer = customers.find(c => c.id === customerId);
+        if (fullCustomer) {
+          dispatch(setCurrentCustomer(fullCustomer));
+        }
       }
-    }
-    
-    // Perform conversion
-    await dispatch(convertWaitlistToCartAction(customerId)).unwrap();
-    
-    // Refresh cart
-    await dispatch(fetchMyCart());
-    
-    setTimeout(() => {
+      
+      // Perform conversion
+      await convertMutation.mutateAsync(customerId);
+      
+      // Refresh cart
+      
+      Alert.alert('Success', `All items converted to cart successfully`);
+      
+      // Refresh waitlist data
+      await refetchWaitlists();
+      
+    } catch  {
+      Alert.alert(
+        'Clear Cart First',
+        'Your cart has existing items. Would you like to clear them before converting to waitlist?'
+      );
+    } finally {
       setConvertAllLoading(prev => ({ ...prev, [customerId]: false }));
-    }, 1000);
-    
-  } catch  {
-  Alert.alert(
-  'Clear Cart First',
-  'Your cart has existing items. Would you like to clear them before converting to waitlist?')
-    setConvertAllLoading(prev => ({ ...prev, [customerId]: false }));
-  }
-};
-
+    }
+  };
 
   const toggleCustomerExpansion = (customerId: string) => {
     setExpandedCustomers(prev => ({
@@ -1136,7 +1046,7 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
   };
 
   // Expand all customers by default on first load
-  useEffect(() => {
+  React.useEffect(() => {
     if (waitlistItemsArray.length > 0 && Object.keys(expandedCustomers).length === 0) {
       const initialExpanded: Record<string, boolean> = {};
       Object.keys(groupedByCustomer).forEach(customerId => {
@@ -1146,7 +1056,14 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
     }
   }, [waitlistItemsArray, expandedCustomers, groupedByCustomer]);
 
-  if (loading && !refreshing && waitlistItemsArray.length === 0) {
+  // Handle errors
+  React.useEffect(() => {
+    if (waitlistError) {
+      Alert.alert('Error', waitlistError.message || 'Failed to load waitlist');
+    }
+  }, [waitlistError]);
+
+  if (waitlistLoading && !refreshing && waitlistItemsArray.length === 0) {
     return (
       <YStack flex={1} justifyContent="center" alignItems="center" backgroundColor="$orange1">
         <Spinner size="large" color="$orange9" />
@@ -1206,7 +1123,18 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
                 <H3 fontWeight="bold" color="$orange12">
                   ⏳ My Waitlist
                 </H3>
-                
+                 <Button 
+                            onPress={handleback}
+                            alignSelf="flex-start"
+                            size="$3"
+                            backgroundColor="$orange2"
+                            borderColor="$orange5"
+                            borderWidth={1}
+                            borderRadius="$3"
+                            marginBottom="$2"
+                          >
+                            <Text color="$orange11" fontWeight="600">← Back </Text>
+                          </Button>
                 {!hasValidData ? (
                   <YStack alignItems="center" space="$3" paddingVertical="$4">
                     <Text fontSize="$6" color="$orange9">⏳</Text>
@@ -1261,7 +1189,7 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
                           Total Value:
                         </Text>
                         <Text fontSize="$4" fontWeight="700" color="$green10">
-                          ${totalValue.toFixed(2)}
+                          {totalValue.toFixed(2)}
                         </Text>
                       </XStack>
                     </YStack>
@@ -1326,8 +1254,7 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
             if (!customerItems || customerItems.length === 0) return null;
             
             const customer = customerItems[0]?.customer;
-            const customerName = customer?.name || 'Unknown Customer';
-            
+const customerName = (customer?.name || 'Unknown Customer').trim();            
             return (
               <CustomerWaitlistSection
                 key={customerId}
@@ -1341,7 +1268,7 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
                 onConvertAllToCart={handleConvertAllToCart}
                 onRemoveFromWaitlist={handleRemoveFromWaitlist}
                 onRemoveAllForCustomer={handleRemoveAllForCustomer}
-                conversionLoading={conversionLoading}
+                conversionLoading={convertMutation.isPending}
                 convertAllLoading={convertAllLoading[customerId] || false}
                 removeAllLoading={removeAllLoading[customerId] || false}
               />
@@ -1361,8 +1288,8 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
           }}
           onRemoveFromWaitlist={handleRemoveFromWaitlist}
           onConvertToCart={handleConvertToCart}
-          removingFromWaitlist={removingItemId === selectedItem.id}
-          convertingToCart={conversionLoading}
+          removingFromWaitlist={removeMutation.isPending && removeMutation.variables === selectedItem.id}
+          convertingToCart={convertMutation.isPending}
         />
       )}
       
@@ -1376,7 +1303,7 @@ const proceedWithBulkConversion = async (customerId: string, customerItems: Wait
             setSelectedItem(null);
           }}
           onConfirm={confirmRemoveFromWaitlist}
-          loading={removingItemId === selectedItem.id}
+          loading={removeMutation.isPending}
         />
       )}
       

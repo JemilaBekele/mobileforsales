@@ -1,5 +1,4 @@
-import React, { useEffect, useState } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Alert,
   RefreshControl,
@@ -20,34 +19,168 @@ import {
   Input,
   Fieldset,
   Label,
- 
 } from 'tamagui';
-import type { AppDispatch } from '@/(redux)/store';
 import { useFocusEffect } from 'expo-router';
 
-// Redux imports - UPDATED with new filter imports
-import {
-  fetchUserSells,
-  clearFilters,
-  setCustomerFilter,
-  setStatusFilter,
-  setDateRangeFilter,
-  selectUserSells,
-  selectUserSellsLoading,
-  selectUserSellsError,
-  selectUserSellsCount,
-  selectUserSellsFilters,
-  selectUserSellsMeta,
-  selectFilteredUserSells,
-  selectFilteredUserSellsCount,
-  convertSellToCart,
-  selectIsSellConverting,
-  selectSellConversionError,
-  clearConversionError,
-} from '@/(redux)/sell';
+// React Query imports
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import api from "@/(utils)/config";
+import { GetAllSellsUserParams, GetAllSellsUserResponse, Sell, SellItem, SellItemBatch } from "@/(utils)/types";
 
-// Import the actual Sell type from your API
-import type { Sell, SellItem, SellItemBatch } from '@/(utils)/types';
+// Query keys
+const sellsKeys = {
+  all: ['sells'] as const,
+  lists: () => [...sellsKeys.all, 'list'] as const,
+  list: (filters: GetAllSellsUserParams) => [...sellsKeys.lists(), filters] as const,
+  userSells: (userId?: string) => [...sellsKeys.all, 'user', userId] as const,
+  detail: (id: string) => [...sellsKeys.all, 'detail', id] as const,
+  convert: (sellId: string) => [...sellsKeys.all, 'convert', sellId] as const,
+};
+
+// Get all sells for a specific user
+const getAllSellsUser = async (
+  params: GetAllSellsUserParams
+): Promise<GetAllSellsUserResponse> => {
+  try {
+    const response = await api.get("/sells/user/based", {
+      params: {
+        startDate: params.startDate,
+        endDate: params.endDate,
+        customerName: params.customerName,
+        status: params.status,
+      }
+    });
+    
+    return {
+      success: true,
+      sells: response.data.sells || [],
+      count: response.data.count || 0,
+      meta: response.data.meta || {},
+    };
+  } catch (error: any) {
+    throw new Error(error.response?.data?.message || "Failed to fetch user sells");
+  }
+};
+
+// React Query hook for fetching user sells
+const useUserSells = (params: GetAllSellsUserParams) => {
+  return useQuery<GetAllSellsUserResponse, Error>({
+    queryKey: sellsKeys.list(params),
+    queryFn: () => getAllSellsUser(params),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: 2,
+    enabled: !!params, // Only run query if params exist
+    select: (data) => ({
+      ...data,
+      sells: data.sells || [],
+    }),
+  });
+};
+
+export interface ConvertOrderResponse {
+  success: boolean;
+  message: string;
+  cart: any;
+  originalOrder: {
+    invoiceNo: string;
+    saleStatus: string;
+    grandTotal: number;
+    totalProducts: number;
+  };
+}
+
+// Convert order to cart
+const convertOrderToCart = async (
+  sellId: string
+): Promise<ConvertOrderResponse> => {
+  try {
+    const response = await api.post(`/carts/convert/${sellId}/OrderToCart`);
+    
+    return {
+      success: true,
+      message: response.data.message,
+      cart: response.data.cart,
+      originalOrder: response.data.originalOrder,
+    };
+  } catch (error: any) {
+    throw new Error(error.response?.data?.message || "Failed to convert order to cart");
+  }
+};
+
+// Context type for optimistic updates
+interface ConvertOrderContext {
+  previousSells?: GetAllSellsUserResponse;
+}
+
+// React Query hook for converting order to cart
+const useConvertOrderToCart = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation<
+    ConvertOrderResponse,
+    Error,
+    string, // sellId parameter
+    ConvertOrderContext // Context type
+  >({
+    mutationFn: convertOrderToCart,
+    // On successful conversion
+    onSuccess: (data, sellId) => {
+      // Invalidate relevant queries
+      queryClient.invalidateQueries({ queryKey: sellsKeys.all });
+      queryClient.invalidateQueries({ queryKey: ['cart'] });
+      
+      // You can also update the cache optimistically
+      // Remove the sold item from sells list if needed
+      queryClient.setQueryData<GetAllSellsUserResponse>(
+        sellsKeys.lists(),
+        (oldData) => {
+          if (!oldData) return oldData;
+          return {
+            ...oldData,
+            sells: oldData.sells?.filter(sell => sell.id !== sellId) || [],
+            count: Math.max(0, (oldData.count || 1) - 1),
+          };
+        }
+      );
+    },
+    // Optional: onMutate for optimistic updates
+    onMutate: async (sellId) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: sellsKeys.all });
+      
+      // Snapshot the previous value
+      const previousSells = queryClient.getQueryData<GetAllSellsUserResponse>(sellsKeys.lists());
+      
+      // Return a context object with the snapshotted value
+      return { previousSells };
+    },
+    // Optional: onError for rollback
+    onError: (err, sellId, context) => {
+      // If the mutation fails, use the context returned from onMutate to roll back
+      if (context?.previousSells) {
+        queryClient.setQueryData(sellsKeys.lists(), context.previousSells);
+      }
+    },
+    // Optional: onSettled for cleanup
+    onSettled: () => {
+      // Always refetch after error or success
+      queryClient.invalidateQueries({ queryKey: sellsKeys.all });
+    },
+  });
+};
+
+// // Helper hook for getting a single sell
+// const useSellDetail = (sellId?: string) => {
+//   return useQuery({
+//     queryKey: sellsKeys.detail(sellId || ''),
+//     queryFn: async () => {
+//       if (!sellId) throw new Error('No sell ID provided');
+//       const response = await api.get(`/sells/${sellId}`);
+//       return response.data;
+//     },
+//     enabled: !!sellId, // Only fetch if sellId exists
+//   });
+// };
 
 const BACKEND_URL = "https://ordere.net";
 
@@ -69,41 +202,6 @@ const formatDateForBackend = (date: Date): string => {
   return `${year}-${month}-${day}`;
 };
 
-const getDatePresets = () => {
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  
-  const last3Days = new Date(today);
-  last3Days.setDate(today.getDate() - 3);
-  
-  const lastWeek = new Date(today);
-  lastWeek.setDate(today.getDate() - 7);
-  
-  const lastMonth = new Date(today);
-  lastMonth.setMonth(today.getMonth() - 1);
-  
-  const last3Months = new Date(today);
-  last3Months.setMonth(today.getMonth() - 3);
-  
-  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  
-  const startOfYear = new Date(today.getFullYear(), 0, 1);
-
-  return {
-    today: formatDateForBackend(today),
-    yesterday: formatDateForBackend(yesterday),
-    last3Days: formatDateForBackend(last3Days),
-    lastWeek: formatDateForBackend(lastWeek),
-    lastMonth: formatDateForBackend(lastMonth),
-    last3Months: formatDateForBackend(last3Months),
-    startOfMonth: formatDateForBackend(startOfMonth),
-    startOfYear: formatDateForBackend(startOfYear),
-    current: formatDateForBackend(today),
-  };
-};
-
-// UPDATED Status Select Component with multiple status support
 const StatusSelect = ({ 
   value, 
   onValueChange 
@@ -344,220 +442,136 @@ const StatusSelect = ({
   );
 };
 
-// NEW Customer Filter Component
+const getDatePresets = () => {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  
+  const last3Days = new Date(today);
+  last3Days.setDate(today.getDate() - 3);
+  
+  const lastWeek = new Date(today);
+  lastWeek.setDate(today.getDate() - 7);
+  
+  const lastMonth = new Date(today);
+  lastMonth.setMonth(today.getMonth() - 1);
+  
+  const last3Months = new Date(today);
+  last3Months.setMonth(today.getMonth() - 3);
+  
+  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  
+  const startOfYear = new Date(today.getFullYear(), 0, 1);
+
+  return {
+    today: formatDateForBackend(today),
+    yesterday: formatDateForBackend(yesterday),
+    last3Days: formatDateForBackend(last3Days),
+    lastWeek: formatDateForBackend(lastWeek),
+    lastMonth: formatDateForBackend(lastMonth),
+    last3Months: formatDateForBackend(last3Months),
+    startOfMonth: formatDateForBackend(startOfMonth),
+    startOfYear: formatDateForBackend(startOfYear),
+    current: formatDateForBackend(today),
+  };
+};
+
+// UPDATED: CustomerFilter component - simple input box for customer name
+// SIMPLE: CustomerFilter component - inline input box without popup
 const CustomerFilter = ({ 
   value, 
-  onValueChange,
-  sells 
+  onValueChange 
 }: { 
-  value?: string | number;
-  onValueChange: (value: string | number | undefined) => void;
-  sells: Sell[];
+  value?: string;
+  onValueChange: (value: string | undefined) => void;
 }) => {
-  const [showModal, setShowModal] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [tempValue, setTempValue] = useState(value || '');
 
-  // Extract unique customers from sells
-  const customers = Array.from(new Set(
-    sells
-      .filter(sell => sell.customer)
-      .map(sell => ({
-        id: sell.customerId,
-        name: sell.customer?.name || `Customer ${sell.customerId?.slice(-8) || 'Unknown'}`,
-      }))
-      .filter(customer => customer.id)
-  ));
+  // Handle input change with debounce
+  const handleInputChange = useCallback((text: string) => {
+    setTempValue(text);
+    
+    // If empty, clear the filter immediately
+    if (text.trim() === '') {
+      onValueChange(undefined);
+    }
+  }, [onValueChange]);
 
-  const filteredCustomers = customers.filter(customer =>
-    customer.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Handle apply when user stops typing or presses enter
+  const handleApply = useCallback(() => {
+    const trimmedValue = tempValue.trim();
+    if (trimmedValue === '') {
+      onValueChange(undefined);
+    } else {
+      onValueChange(trimmedValue);
+    }
+    // Dismiss keyboard
+    Keyboard.dismiss();
+  }, [tempValue, onValueChange]);
 
-  const handleSelectCustomer = (customerId?: string | number) => {
-    onValueChange(customerId);
-    setShowModal(false);
-  };
+  // Handle clear
+  const handleClear = useCallback(() => {
+    setTempValue('');
+    onValueChange(undefined);
+  }, [onValueChange]);
 
-  const getCustomerName = () => {
-    if (!value) return 'All Customers';
-    const customer = customers.find(c => String(c.id) === String(value));
-    return customer ? customer.name : `Customer ${value}`;
-  };
+  // Update temp value when external value changes
+  useEffect(() => {
+    setTempValue(value || '');
+  }, [value]);
 
   return (
-    <>
-      <Button
-        onPress={() => setShowModal(true)}
-        backgroundColor="$orange1"
-        borderColor="$orange5"
-        borderWidth={1}
-        borderRadius="$3"
-        justifyContent="space-between"
-        paddingHorizontal="$3"
-        paddingVertical="$2"
-        pressStyle={{ backgroundColor: "$orange2" }}
-      >
-        <XStack alignItems="center" space="$2" flex={1}>
-          <Text 
-            color="$orange12" 
-            fontWeight="600" 
-            fontSize="$3"
-            numberOfLines={1}
-            flex={1}
-            textAlign="left"
+    <YStack>
+      <Label htmlFor="customerInput" fontSize="$3" fontWeight="600" color="$orange11">
+        Customer
+      </Label>
+      <XStack alignItems="center" space="$2">
+        <Input
+          id="customerInput"
+          flex={1}
+          value={tempValue}
+          onChangeText={handleInputChange}
+          placeholder="Enter customer name..."
+          borderColor="$orange5"
+          backgroundColor="$orange1"
+          onSubmitEditing={handleApply}
+          returnKeyType="done"
+          clearButtonMode="while-editing"
+        />
+        {tempValue.trim() && (
+          <Button
+            size="$2"
+            circular
+            backgroundColor="$orange3"
+            onPress={handleClear}
+            pressStyle={{ backgroundColor: "$orange4" }}
           >
-            👤 {getCustomerName()}
+            <Text color="$orange10" fontSize="$1">✕</Text>
+          </Button>
+        )}
+        <Button
+          size="$2"
+          backgroundColor="$orange9"
+          borderColor="$orange10"
+          borderWidth={1}
+          borderRadius="$3"
+          onPress={handleApply}
+          disabled={tempValue.trim() === (value || '')}
+          pressStyle={{ backgroundColor: "$orange10" }}
+        >
+          <Text color="white" fontWeight="600" fontSize="$2">
+            Apply
           </Text>
-        </XStack>
-        <Text color="$orange10" fontSize="$2">▼</Text>
-      </Button>
-
-      <Modal
-        visible={showModal}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShowModal(false)}
-      >
-        <TouchableWithoutFeedback onPress={() => setShowModal(false)}>
-          <YStack 
-            flex={1} 
-            justifyContent="center" 
-            alignItems="center" 
-            backgroundColor="rgba(0,0,0,0.5)"
-            padding="$4"
-          >
-            <TouchableWithoutFeedback>
-              <YStack 
-                backgroundColor="white" 
-                borderRadius="$4" 
-                padding="$4" 
-                width="100%"
-                maxWidth={400}
-                borderWidth={1}
-                borderColor="$orange4"
-                maxHeight="80%"
-              >
-                <ScrollView showsVerticalScrollIndicator={false}>
-                  <YStack space="$4">
-                    <YStack alignItems="center" space="$2">
-                      <H4 color="$gray12" textAlign="center" fontWeight="700">
-                        Select Customer
-                      </H4>
-                      <Text fontSize="$2" color="$gray9" textAlign="center">
-                        Filter orders by customer
-                      </Text>
-                    </YStack>
-
-                    <Fieldset>
-                      <Label htmlFor="customerSearch" fontSize="$3" fontWeight="600" color="$orange11">
-                        Search Customer
-                      </Label>
-                      <Input
-                        id="customerSearch"
-                        placeholder="Search customers..."
-                        value={searchQuery}
-                        onChangeText={setSearchQuery}
-                        borderColor="$orange5"
-                        backgroundColor="$orange1"
-                      />
-                    </Fieldset>
-
-                    <YStack space="$2" maxHeight={300}>
-                      <Button
-                        onPress={() => handleSelectCustomer(undefined)}
-                        backgroundColor={!value ? "$blue2" : "white"}
-                        borderColor={!value ? "$blue7" : "$gray4"}
-                        borderWidth={1}
-                        borderRadius="$3"
-                        padding="$3"
-                        justifyContent="flex-start"
-                        pressStyle={{ backgroundColor: "$gray2" }}
-                      >
-                        <XStack alignItems="center" space="$2">
-                          <Text fontSize="$4" fontWeight="600" color={!value ? "$blue12" : "$gray12"}>
-                            👥 All Customers
-                          </Text>
-                        </XStack>
-                      </Button>
-
-                      {filteredCustomers.map((customer) => (
-                        <Button
-                          key={customer.id}
-                          onPress={() => handleSelectCustomer(customer.id)}
-                          backgroundColor={String(value) === String(customer.id) ? "$blue2" : "white"}
-                          borderColor={String(value) === String(customer.id) ? "$blue7" : "$gray4"}
-                          borderWidth={1}
-                          borderRadius="$3"
-                          padding="$3"
-                          justifyContent="flex-start"
-                          pressStyle={{ backgroundColor: "$gray2" }}
-                        >
-                          <XStack alignItems="center" space="$2" width="100%">
-                            <YStack flex={1}>
-                              <Text
-                                fontSize="$4"
-                                fontWeight="600"
-                                color={String(value) === String(customer.id) ? "$blue12" : "$gray12"}
-                                numberOfLines={1}
-                              >
-                                {customer.name}
-                              </Text>
-                            </YStack>
-                            {String(value) === String(customer.id) && (
-                              <Text color="$blue9" fontSize="$3" fontWeight="700">
-                                ✓
-                              </Text>
-                            )}
-                          </XStack>
-                        </Button>
-                      ))}
-
-                      {filteredCustomers.length === 0 && (
-                        <Text fontSize="$3" color="$gray9" textAlign="center" padding="$4">
-                          No customers found
-                        </Text>
-                      )}
-                    </YStack>
-
-                    <XStack space="$3" marginTop="$3">
-                      <Button
-                        flex={1}
-                        backgroundColor="$gray2"
-                        borderColor="$gray5"
-                        borderWidth={1}
-                        borderRadius="$4"
-                        onPress={() => setShowModal(false)}
-                        pressStyle={{ backgroundColor: "$gray3" }}
-                      >
-                        <Text color="$gray11" fontWeight="600" fontSize="$3">
-                          Cancel
-                        </Text>
-                      </Button>
-                      <Button
-                        flex={1}
-                        backgroundColor="$orange9"
-                        borderColor="$orange10"
-                        borderWidth={1}
-                        borderRadius="$4"
-                        onPress={() => handleSelectCustomer(undefined)}
-                        pressStyle={{ backgroundColor: "$orange10" }}
-                      >
-                        <Text color="white" fontWeight="600" fontSize="$3">
-                          Clear Filter
-                        </Text>
-                      </Button>
-                    </XStack>
-                  </YStack>
-                </ScrollView>
-              </YStack>
-            </TouchableWithoutFeedback>
-          </YStack>
-        </TouchableWithoutFeedback>
-      </Modal>
-    </>
+        </Button>
+      </XStack>
+      <Text fontSize="$1" color="$orange9" marginTop="$1">
+        {value ? `Filtering by: "${value}"` : 'Leave empty to show all customers'}
+      </Text>
+    </YStack>
   );
 };
 
-// Enhanced Date Input Component (same as before)
+// Enhanced Date Input Component
 const DateInput = ({ 
   value, 
   onDateChange, 
@@ -740,7 +754,7 @@ const DateInput = ({
   );
 };
 
-// Enhanced Date Filter Modal with Quick Presets (same as before)
+// Enhanced Date Filter Modal with Quick Presets
 const DateFilterModal = ({
   visible,
   onClose,
@@ -796,16 +810,6 @@ const DateFilterModal = ({
   };
 
   const getQuickFilterButtons = () => [
-    // { 
-    //   label: '📅 Today', 
-    //   onPress: () => applyQuickFilter(datePresets.today, datePresets.today),
-    //   description: 'View today\'s sales'
-    // },
-    // { 
-    //   label: '📅 Yesterday', 
-    //   onPress: () => applyQuickFilter(datePresets.yesterday, datePresets.yesterday),
-    //   description: 'View yesterday\'s sales'
-    // },
     { 
       label: '📅 Last 3 Days', 
       onPress: () => applyQuickFilter(datePresets.last3Days, datePresets.current),
@@ -1469,139 +1473,126 @@ const SellDetailModal = ({
   );
 };
 
+// UPDATED: OrderScreen component with React Query instead of Zustand
 const OrderScreen = () => {
-  const dispatch = useDispatch<AppDispatch>();
-
-  // Redux state - UPDATED with new selectors
-  const sells = useSelector(selectUserSells);
-  const filteredSells = useSelector(selectFilteredUserSells);
-  const filteredCount = useSelector(selectFilteredUserSellsCount);
-  const loading = useSelector(selectUserSellsLoading);
-  const error = useSelector(selectUserSellsError);
-  const totalCount = useSelector(selectUserSellsCount);
-  const filters = useSelector(selectUserSellsFilters);
-  const meta = useSelector(selectUserSellsMeta);
-
-  // Local state
+  // Local state for filters
+  const [filters, setFilters] = useState<GetAllSellsUserParams>({
+    startDate: undefined,
+    endDate: undefined,
+    customerName: undefined,
+    status: undefined,
+  });
+  
+  const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [selectedSell, setSelectedSell] = useState<Sell | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [showConvertConfirm, setShowConvertConfirm] = useState(false);
   const [sellToConvert, setSellToConvert] = useState<Sell | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
 
-  // UPDATED: Use filters from Redux state
+  // React Query hooks
+  const { data, isLoading, error, refetch } = useUserSells(filters);
+  const convertMutation = useConvertOrderToCart();
+  const queryClient = useQueryClient();
+
+  // Access data
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sells = data?.sells || [];
+  const totalCount = data?.count || 0;
+  // const meta = data?.meta || {};
+
+  // UPDATED: Check if any filters are active
   const statusFilter = filters.status || 'all';
-  const customerFilter = filters.customerId;
-
-  // Selectors for conversion state
-  const isSellConverting = useSelector((state: any) => 
-    selectIsSellConverting(selectedSell?.id || '')(state)
-  );
-  const conversionError = useSelector((state: any) => 
-    selectSellConversionError(selectedSell?.id || '')(state)
-  );
-
-  // Check if any filters are active
+  const customerFilter = filters.customerName;
   const hasActiveFilters = statusFilter !== 'all' || customerFilter || searchQuery || filters.startDate || filters.endDate;
 
-  // Load sells data with all filters
-  useEffect(() => {
-    const fetchParams: any = {
-      userId: 'current-user-id' // Replace with actual user ID
-    };
-
-    if (filters.startDate) fetchParams.startDate = filters.startDate;
-    if (filters.endDate) fetchParams.endDate = filters.endDate;
-    if (filters.customerId) fetchParams.customerId = filters.customerId;
-    if (filters.status && filters.status !== 'all') fetchParams.status = filters.status;
-
-    dispatch(fetchUserSells(fetchParams));
-  }, [dispatch, filters]);
+  // Filter sells locally based on search query
+  const filteredSells = useMemo(() => {
+    return sells.filter(sell => {
+      if (!searchQuery) return true;
+      
+      const matchesSearch = 
+        sell.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        sell.invoiceNo?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        sell.customer?.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        sell.items?.some(item => 
+          item?.product?.name?.toLowerCase().includes(searchQuery.toLowerCase())
+        );
+      
+      return matchesSearch;
+    });
+  }, [sells, searchQuery]);
 
   // Refresh sells data when screen comes into focus
   useFocusEffect(
-    React.useCallback(() => {
-      const fetchParams: any = {
-        userId: 'current-user-id'
-      };
-
-      if (filters.startDate) fetchParams.startDate = filters.startDate;
-      if (filters.endDate) fetchParams.endDate = filters.endDate;
-      if (filters.customerId) fetchParams.customerId = filters.customerId;
-      if (filters.status && filters.status !== 'all') fetchParams.status = filters.status;
-
-      dispatch(fetchUserSells(fetchParams));
-    }, [dispatch, filters])
+    useCallback(() => {
+      refetch();
+    }, [refetch])
   );
 
   useEffect(() => {
     if (error) {
-      Alert.alert('Error', error);
+      Alert.alert('Error', error.message || 'Failed to fetch sales');
     }
   }, [error]);
 
-  // Clear conversion error when sell changes
-  useEffect(() => {
-    if (selectedSell?.id && conversionError) {
-      dispatch(clearConversionError(selectedSell.id));
-    }
-  }, [selectedSell, conversionError, dispatch]);
-
-  const handleRefresh = async () => {
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    const fetchParams: any = {
-      userId: 'current-user-id'
-    };
-
-    if (filters.startDate) fetchParams.startDate = filters.startDate;
-    if (filters.endDate) fetchParams.endDate = filters.endDate;
-    if (filters.customerId) fetchParams.customerId = filters.customerId;
-    if (filters.status && filters.status !== 'all') fetchParams.status = filters.status;
-
-    await dispatch(fetchUserSells(fetchParams));
+    await refetch();
     setRefreshing(false);
-  };
+  }, [refetch]);
 
-  const handleApplyDateFilters = (newFilters: { startDate?: string; endDate?: string }) => {
-    dispatch(setDateRangeFilter(newFilters));
-  };
+  const handleApplyDateFilters = useCallback((newFilters: { startDate?: string; endDate?: string }) => {
+    setFilters(prev => ({
+      ...prev,
+      startDate: newFilters.startDate,
+      endDate: newFilters.endDate,
+    }));
+  }, []);
 
-  const handleStatusFilterChange = (status: string) => {
-    dispatch(setStatusFilter(status === 'all' ? undefined : status));
-  };
+  const handleStatusFilterChange = useCallback((status: string) => {
+    setFilters(prev => ({
+      ...prev,
+      status: status === 'all' ? undefined : status,
+    }));
+  }, []);
 
-  const handleCustomerFilterChange = (customerId?: string | number) => {
-    dispatch(setCustomerFilter(customerId));
-  };
+  const handleCustomerFilterChange = useCallback((customerName?: string) => {
+    setFilters(prev => ({
+      ...prev,
+      customerName: customerName,
+    }));
+  }, []);
 
-  const handleResetAllFilters = () => {
-    // Clear Redux filters
-    dispatch(clearFilters());
-    // Clear local state
+  const handleResetAllFilters = useCallback(() => {
+    setFilters({
+      startDate: undefined,
+      endDate: undefined,
+      customerName: undefined,
+      status: undefined,
+    });
     setSearchQuery('');
-    // Close filter modal if open
     setShowFilterModal(false);
     
     Alert.alert('Filters Reset', 'All filters have been cleared');
-  };
+  }, []);
 
-  const handleViewDetails = (sell: Sell) => {
+  const handleViewDetails = useCallback((sell: Sell) => {
     setSelectedSell(sell);
     setShowDetailModal(true);
-  };
+  }, []);
 
-  const handleConvertToCart = (sell: Sell) => {
+  const handleConvertToCart = useCallback((sell: Sell) => {
     setSellToConvert(sell);
     setShowConvertConfirm(true);
-  };
+  }, []);
 
-  const confirmConvertToCart = async () => {
+  const confirmConvertToCart = useCallback(async () => {
     if (!sellToConvert) return;
 
     try {
-      const result = await dispatch(convertSellToCart(sellToConvert.id)).unwrap();
+      const result = await convertMutation.mutateAsync(sellToConvert.id);
       
       Alert.alert(
         'Success',
@@ -1616,12 +1607,12 @@ const OrderScreen = () => {
         }}]
       );
     } catch (error: any) {
-      Alert.alert('Error', error || 'Failed to convert order to cart');
+      Alert.alert('Error', error.message || 'Failed to convert order to cart');
     }
-  };
+  }, [sellToConvert, convertMutation, selectedSell?.id]);
 
   // Format date range for display
-  const formatDateRangeDisplay = () => {
+  const formatDateRangeDisplay = useCallback(() => {
     if (!filters.startDate && !filters.endDate) return null;
     
     const formatDate = (dateString: string) => {
@@ -1639,52 +1630,23 @@ const OrderScreen = () => {
     } else if (filters.endDate) {
       return `Until ${formatDate(filters.endDate)}`;
     }
-  };
-
-  // Apply search filter on top of Redux filters
-  const searchedSells = filteredSells.filter(sell => {
-    if (!searchQuery) return true;
-    
-    const matchesSearch = 
-      sell.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      sell.invoiceNo?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      sell.customer?.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      sell.items?.some(item => 
-        item?.product?.name?.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-    
-    return matchesSearch;
-  });
+  }, [filters.startDate, filters.endDate]);
 
   // Group sells by date
-  const sellsByDate = searchedSells.reduce((acc, sell) => {
-    const date = new Date(sell.saleDate).toLocaleDateString();
-    if (!acc[date]) {
-      acc[date] = [];
-    }
-    acc[date].push(sell);
-    return acc;
-  }, {} as Record<string, Sell[]>);
+  const sellsByDate = useMemo(() => {
+    return filteredSells.reduce((acc, sell) => {
+      const date = new Date(sell.saleDate).toLocaleDateString();
+      if (!acc[date]) {
+        acc[date] = [];
+      }
+      acc[date].push(sell);
+      return acc;
+    }, {} as Record<string, Sell[]>);
+  }, [filteredSells]);
 
-  // Custom Badge Component
-  const Badge = ({ children, backgroundColor, ...props }: any) => (
-    <YStack
-      backgroundColor={backgroundColor}
-      paddingHorizontal="$2"
-      paddingVertical="$1"
-      borderRadius="$2"
-      alignItems="center"
-      justifyContent="center"
-      {...props}
-    >
-      <Text fontSize="$1" fontWeight="700" color="white">
-        {children}
-      </Text>
-    </YStack>
-  );
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
+  // Helper functions
+  const getStatusColor = useCallback((status: string) => {
+    switch(status) {
       case 'DELIVERED': return '$green9';
       case 'NOT_APPROVED': return '$orange9';
       case 'PARTIALLY_DELIVERED': return '$yellow9';
@@ -1693,10 +1655,10 @@ const OrderScreen = () => {
       case 'PENDING': return '$purple9';
       default: return '$gray9';
     }
-  };
+  }, []);
 
-  const getStatusText = (status: string) => {
-    switch (status) {
+  const getStatusText = useCallback((status: string) => {
+    switch(status) {
       case 'DELIVERED': return 'Delivered';
       case 'NOT_APPROVED': return 'Not Approved';
       case 'PARTIALLY_DELIVERED': return 'Partially Delivered';
@@ -1705,31 +1667,27 @@ const OrderScreen = () => {
       case 'PENDING': return 'Pending';
       default: return status;
     }
-  };
+  }, []);
 
-  const getProductDisplayNames = (sell: Sell) => {
-    if (!sell.items || !Array.isArray(sell.items) || sell.items.length === 0) return 'No items';
+  const hasBatches = useCallback((sell: Sell) => {
+    return sell.items?.some(item => item.batches?.length > 0) || false;
+  }, []);
+
+  const getProductDisplayNames = useCallback((sell: Sell) => {
+    if (!sell.items?.length) return 'No items';
     
-    const productNames = sell.items.map(item => {
-      return item?.product?.name || `Product ${item?.productId?.slice(-8) || 'Unknown'}`;
-    });
-    
-    if (productNames.length <= 2) {
-      return productNames.join(', ');
-    } else {
-      return `${productNames.slice(0, 2).join(', ')} +${productNames.length - 2} more`;
+    const names = sell.items.slice(0, 3).map(item => item.product?.name || 'Unknown');
+    if (sell.items.length > 3) {
+      return `${names.join(', ')} and ${sell.items.length - 3} more...`;
     }
-  };
+    return names.join(', ');
+  }, []);
 
-  const hasBatches = (sell: Sell) => {
-    return sell.items?.some(item => item?.batches && item.batches.length > 0) || false;
-  };
-
-  const canConvertSell = (sell: Sell) => {
+  const canConvertSell = useCallback((sell: Sell) => {
     return !sell.locked && ['PENDING', 'APPROVED', 'NOT_APPROVED'].includes(sell.saleStatus);
-  };
+  }, []);
 
-  if (loading && !refreshing && sells.length === 0) {
+  if (isLoading && !refreshing && sells.length === 0) {
     return (
       <YStack flex={1} justifyContent="center" alignItems="center" backgroundColor="$orange1">
         <Spinner size="large" color="$orange9" />
@@ -1801,20 +1759,19 @@ const OrderScreen = () => {
                         {totalCount}
                       </Text>
                     </XStack>
-                    {filteredCount !== totalCount && (
+                    {filteredSells.length !== totalCount && (
                       <XStack justifyContent="space-between" width="100%">
                         <Text fontSize="$4" fontWeight="600" color="$orange11">
                           Filtered Sales:
                         </Text>
                         <Text fontSize="$4" fontWeight="700" color="$blue10">
-                          {filteredCount}
+                          {filteredSells.length}
                         </Text>
                       </XStack>
                     )}
-                    {meta?.filters && (
+                    {customerFilter && (
                       <Text fontSize="$2" color="$orange10" textAlign="center">
-                        {meta.filters.customerId && `Customer: ${meta.filters.customerId}`}
-                        {meta.filters.status && ` | Status: ${meta.filters.status}`}
+                        Customer: {customerFilter}
                       </Text>
                     )}
                     {formatDateRangeDisplay() && (
@@ -1875,17 +1832,11 @@ const OrderScreen = () => {
                     />
                   </Fieldset>
 
-                  {/* Customer Filter */}
-                  <Fieldset>
-                    <Label htmlFor="customer" fontSize="$3" fontWeight="600" color="$orange11">
-                      Customer
-                    </Label>
+                  {/* UPDATED: Customer Filter - simple input box */}
                     <CustomerFilter
-                      value={customerFilter}
-                      onValueChange={handleCustomerFilterChange}
-                      sells={sells}
-                    />
-                  </Fieldset>
+          value={customerFilter}
+          onValueChange={handleCustomerFilterChange}
+        />
 
                   {/* Status Filter */}
                   <Fieldset>
@@ -1933,7 +1884,7 @@ const OrderScreen = () => {
                         <XStack flexWrap="wrap" space="$1">
                           {customerFilter && (
                             <Badge backgroundColor="$purple8" size="$1">
-                              Customer
+                              Customer: {customerFilter}
                             </Badge>
                           )}
                           {statusFilter !== 'all' && (
@@ -1992,19 +1943,20 @@ const OrderScreen = () => {
                           </Text>
                           {sell.customer && (
                             <Text fontSize="$3" color="$purple10" fontWeight="600">
-                              👤 {sell.customer.name}
+                              Customer: {sell.customer.name}
                             </Text>
                           )}
                           <Text fontSize="$2" color="$orange10">
-{new Date(sell.saleDate).toLocaleDateString('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric'
-})} at {new Date(sell.saleDate).toLocaleTimeString('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-  hour12: true
-})}                                                 </Text>
+                            {new Date(sell.saleDate).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric'
+                            })} at {new Date(sell.saleDate).toLocaleTimeString('en-US', {
+                              hour: 'numeric',
+                              minute: '2-digit',
+                              hour12: true
+                            })}
+                          </Text>
                         </YStack>
                         <YStack alignItems="flex-end" space="$1">
                           <YStack
@@ -2030,16 +1982,13 @@ const OrderScreen = () => {
                         </YStack>
                       </XStack>
 
-                      <Text fontSize="$3" color="$orange11" numberOfLines={2}>
-                        {getProductDisplayNames(sell)}
-                      </Text>
 
                       <XStack justifyContent="space-between" alignItems="center">
                         <Text fontSize="$3" fontWeight="600" color="$orange11">
                           Total:
                         </Text>
                         <Text fontSize="$4" fontWeight="800" color="$green10">
-                          ${sell.grandTotal?.toFixed(2) || '0.00'}
+                          {sell.grandTotal?.toFixed(2) || '0.00'}
                         </Text>
                       </XStack>
 
@@ -2084,6 +2033,7 @@ const OrderScreen = () => {
         </YStack>
       </ScrollView>
 
+      {/* Keep all modals as they were */}
       <DateFilterModal
         visible={showFilterModal}
         onClose={() => setShowFilterModal(false)}
@@ -2100,7 +2050,7 @@ const OrderScreen = () => {
             setSelectedSell(null);
           }}
           onConvertToCart={() => handleConvertToCart(selectedSell)}
-          isConverting={isSellConverting}
+          isConverting={convertMutation.isPending}
         />
       )}
 
@@ -2113,11 +2063,28 @@ const OrderScreen = () => {
           }}
           onConfirm={confirmConvertToCart}
           sell={sellToConvert}
-          isConverting={isSellConverting}
+          isConverting={convertMutation.isPending}
         />
       )}
     </YStack>
   );
 };
+
+// Custom Badge Component
+const Badge = ({ children, backgroundColor, ...props }: any) => (
+  <YStack
+    backgroundColor={backgroundColor}
+    paddingHorizontal="$2"
+    paddingVertical="$1"
+    borderRadius="$2"
+    alignItems="center"
+    justifyContent="center"
+    {...props}
+  >
+    <Text fontSize="$1" fontWeight="700" color="white">
+      {children}
+    </Text>
+  </YStack>
+);
 
 export default OrderScreen;

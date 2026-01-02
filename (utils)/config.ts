@@ -3,7 +3,7 @@ import axios from "axios";
 import { loadFromStorage } from "@/(utils)/storage";
 
 const api = axios.create({
-  baseURL:  'http://192.168.1.7:5000/api',
+ baseURL: process.env.EXPO_PUBLIC_API_URL, 
   headers: {
     "Content-Type": "application/json", 
   },

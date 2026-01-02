@@ -132,7 +132,6 @@ export const getTopSellingProducts = async (
     const response = await api.get("/products/get/all/Top/Selling/Products", {
       params: queryParams
     });
-        
     // Ensure the response has the expected structure
     return {
       success: true,

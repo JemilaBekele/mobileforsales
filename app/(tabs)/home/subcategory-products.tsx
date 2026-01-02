@@ -1,5 +1,4 @@
-import React, { useEffect, useState } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ScrollView,
@@ -12,15 +11,9 @@ import {
   Image,
   Input,
 } from 'tamagui';
-import { AppDispatch } from '@/(redux)/store';
-import {
-  fetchProductsBySubCategoryId,
-  selectSubcategoryProducts,
-  selectSubcategoryProductsLoading,
-  selectSubcategoryProductsError,
-  clearSubcategoryProducts,
-} from '@/(redux)/subcatagory';
 import { TouchableOpacity } from 'react-native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getProductsBySubCategoryId, Product } from '@/(services)/api/subcatagorypro';
 
 const BACKEND_URL = 'https://ordere.net';
 
@@ -30,37 +23,37 @@ export const normalizeImagePath = (path?: string) => {
   if (normalizedPath.startsWith('http')) {
     return normalizedPath;
   }
-  // Remove any leading slashes to prevent double slashes in URL
   const cleanPath = normalizedPath.replace(/^\/+/, '');
   return `${BACKEND_URL}/${cleanPath}`;
 };
 
 export default function SubcategoryProductsScreen() {
-  const dispatch = useDispatch<AppDispatch>();
   const router = useRouter();
   const params = useLocalSearchParams();
+  const queryClient = useQueryClient();
   
   const subCategoryId = params.subCategoryId as string;
   const subCategoryName = params.subCategoryName as string;
-  
 
-  // Redux state
-  const products = useSelector(selectSubcategoryProducts);
-  const loading = useSelector(selectSubcategoryProductsLoading);
-  const error = useSelector(selectSubcategoryProductsError);
-
+  // Local state
   const [searchTerm, setSearchTerm] = useState('');
   const [visibleProducts, setVisibleProducts] = useState(6);
 
-  useEffect(() => {
-    if (subCategoryId) {
-      dispatch(fetchProductsBySubCategoryId(subCategoryId));
-    }
+  // Use React Query for data fetching
+const {
+  data: productsData,
+  isLoading,
+  error,
+  refetch,
+} = useQuery({
+  queryKey: ['subcategory-products', subCategoryId],
+  queryFn: () => getProductsBySubCategoryId(subCategoryId),
+  enabled: !!subCategoryId, // Only run query if subCategoryId exists
+  staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+  gcTime: 10 * 60 * 1000, // Keep cache for 10 minutes (formerly cacheTime)
+});
 
-    return () => {
-      dispatch(clearSubcategoryProducts());
-    };
-  }, [dispatch, subCategoryId]);
+  const products = productsData?.products || [];
 
   const handleBack = () => {
     router.back();
@@ -79,33 +72,42 @@ export default function SubcategoryProductsScreen() {
     setVisibleProducts(6);
   };
 
-const handleCardClick = (currentIndex: number) => {
-  const currentProduct = displayedProducts[currentIndex];
-  
-  if (!currentProduct) {
-    console.log('Current product not found');
-    return;
-  }
-  
-  // Navigate to the CURRENT product details
-  router.push({
-    pathname: '/ProductDetails/[id]' as any,
-    params: { 
-      id: currentProduct.id,
-      productId: currentProduct.id,
-      productName: currentProduct.name,
-      productGeneric: currentProduct.generic || '',
-      productPrice: currentProduct.sellPrice,
-      productImage: currentProduct.imageUrl,
-      productCode: currentProduct.productCode,
-      productDescription: currentProduct.description || '',
-      categoryName: currentProduct.category?.name || '',
-      subCategoryName: currentProduct.subCategory?.name || '',
-      unitOfMeasure: currentProduct.unitOfMeasure?.name || '',
-    }
-  });
-};
+  const handleRetry = () => {
+    refetch();
+  };
 
+  const handleCardClick = (currentIndex: number) => {
+    const currentProduct = displayedProducts[currentIndex];
+    
+    if (!currentProduct) {
+      console.log('Current product not found');
+      return;
+    }
+    
+    // Prefetch product details if needed
+    queryClient.prefetchQuery({
+      queryKey: ['product-details', currentProduct.id],
+      queryFn: () => Promise.resolve(currentProduct), // You would replace this with actual API call
+    });
+    
+    // Navigate to the CURRENT product details
+    router.push({
+      pathname: '/home/ProductDetails/[id]' as any,
+      params: { 
+        id: currentProduct.id,
+        productId: currentProduct.id,
+        productName: currentProduct.name,
+        productGeneric: currentProduct.generic || '',
+        productPrice: currentProduct.sellPrice,
+        productImage: currentProduct.imageUrl,
+        productCode: currentProduct.productCode,
+        productDescription: currentProduct.description || '',
+        categoryName: currentProduct.category?.name || '',
+        subCategoryName: currentProduct.subCategory?.name || '',
+        unitOfMeasure: currentProduct.unitOfMeasure?.name || '',
+      }
+    });
+  };
 
   // Helper function to safely format price
   const formatPrice = (price: any): string => {
@@ -124,7 +126,7 @@ const handleCardClick = (currentIndex: number) => {
 
   const displayedProducts = filteredProducts.slice(0, visibleProducts);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <YStack flex={1} justifyContent="center" alignItems="center" backgroundColor="#FFF8F0">
         <Spinner size="large" color="#FF7A00" />
@@ -139,11 +141,11 @@ const handleCardClick = (currentIndex: number) => {
     return (
       <YStack flex={1} justifyContent="center" alignItems="center" padding="$4" backgroundColor="#FFF8F0">
         <Text color="#FF4444" textAlign="center" fontSize="$5" fontWeight="600">
-          Error: {error}
+          Error: {error.message || 'Failed to load products'}
         </Text>
         <Button 
           marginTop="$4"
-          onPress={() => subCategoryId && dispatch(fetchProductsBySubCategoryId(subCategoryId))}
+          onPress={handleRetry}
           backgroundColor="#FF7A00"
           borderColor="#FF9B42"
           borderWidth={1}
@@ -190,7 +192,10 @@ const handleCardClick = (currentIndex: number) => {
           
           <Text fontSize="$6" fontWeight="800" color="#FF7A00">
             {subCategoryName}
-          </Text>         
+          </Text>
+          <Text fontSize="$4" color="#A65A00" fontWeight="500">
+            {products.length} products available
+          </Text>
         </YStack>
 
         {/* Search Bar */}
@@ -238,78 +243,77 @@ const handleCardClick = (currentIndex: number) => {
 
         {/* Products Grid */}
         <YStack space="$4">
-  <XStack flexWrap="wrap" justifyContent="space-between" gap="$3">
-    {displayedProducts.map((product: any, index: number) => (
-      <YStack key={product.id} width="48%">
-        <TouchableOpacity onPress={() => handleCardClick(index)}>
-          <Card
-            elevate
-            size="$2"
-            bordered
-            borderRadius="$6"
-            backgroundColor="white"
-            shadowColor="#FFB865"
-            shadowOpacity={0.2}
-            shadowRadius={10}
-            padding="$3"
-          >
-            {/* Product Image */}
-            <YStack alignItems="center" marginBottom="$2">
-              <Image
-                source={{ uri: normalizeImagePath(product.imageUrl) }}
-                width={100}
-                height={100}
-                borderRadius="$4"
-                resizeMode="contain"
-                backgroundColor="#FFF7F0"
-                borderWidth={1}
-                borderColor="#FFD4A3"
-              />
-            </YStack>
-
-            {/* Product Info */}
-            <YStack space="$1">
-              <Text fontSize={13} fontWeight="800" color="#333" numberOfLines={2}>
-                {product.name}
-              </Text>
-              {product.generic && (
-                <Text fontSize={11} color="#A65A00" numberOfLines={1}>
-                  {product.generic}
-                </Text>
-              )}
-              <Text fontSize={10} color="#888" numberOfLines={1}>
-                Code: {product.productCode}
-              </Text>
-              <XStack justifyContent="space-between" alignItems="center" marginTop="$1">
-                <Text fontSize={11} color="#888">
-                  Price:
-                </Text>
-                <Text fontSize={13} fontWeight="900" color="#FF7A00">
-                  {formatPrice(product.sellPrice)}
-                </Text>
-              </XStack>
-              {product.category && (
-                <XStack>
-                  <Text 
-                    fontSize={10} 
-                    color="#666" 
-                    backgroundColor="#FFF2E0" 
-                    paddingHorizontal="$2" 
-                    paddingVertical="$1" 
-                    borderRadius="$2"
+          <XStack flexWrap="wrap" justifyContent="space-between" gap="$3">
+            {displayedProducts.map((product: Product, index: number) => (
+              <YStack key={product.id} width="48%">
+                <TouchableOpacity onPress={() => handleCardClick(index)}>
+                  <Card
+                    elevate
+                    size="$2"
+                    bordered
+                    borderRadius="$6"
+                    backgroundColor="white"
+                    shadowColor="#FFB865"
+                    shadowOpacity={0.2}
+                    shadowRadius={10}
+                    padding="$3"
                   >
-                    {product.category.name}
-                  </Text>
-                </XStack>
-              )}
-            </YStack>
-          </Card>
-        </TouchableOpacity>
+                    {/* Product Image */}
+                    <YStack alignItems="center" marginBottom="$2">
+                      <Image
+                        source={{ uri: normalizeImagePath(product.imageUrl) }}
+                        width={100}
+                        height={100}
+                        borderRadius="$4"
+                        resizeMode="contain"
+                        backgroundColor="#FFF7F0"
+                        borderWidth={1}
+                        borderColor="#FFD4A3"
+                      />
+                    </YStack>
 
-      </YStack>
-    ))}
-  </XStack>
-</YStack>
+                    {/* Product Info */}
+                    <YStack space="$1">
+                      <Text fontSize={13} fontWeight="800" color="#333" numberOfLines={2}>
+                        {product.name}
+                      </Text>
+                      {product.generic && (
+                        <Text fontSize={11} color="#A65A00" numberOfLines={1}>
+                          {product.generic}
+                        </Text>
+                      )}
+                      <Text fontSize={10} color="#888" numberOfLines={1}>
+                        Code: {product.productCode}
+                      </Text>
+                      <XStack justifyContent="space-between" alignItems="center" marginTop="$1">
+                        <Text fontSize={11} color="#888">
+                          Price:
+                        </Text>
+                        <Text fontSize={13} fontWeight="900" color="#FF7A00">
+                          {formatPrice(product.sellPrice)}
+                        </Text>
+                      </XStack>
+                      {product.category && (
+                        <XStack>
+                          <Text 
+                            fontSize={10} 
+                            color="#666" 
+                            backgroundColor="#FFF2E0" 
+                            paddingHorizontal="$2" 
+                            paddingVertical="$1" 
+                            borderRadius="$2"
+                          >
+                            {product.category.name}
+                          </Text>
+                        </XStack>
+                      )}
+                    </YStack>
+                  </Card>
+                </TouchableOpacity>
+              </YStack>
+            ))}
+          </XStack>
+        </YStack>
 
         {/* Load More Button */}
         {filteredProducts.length > visibleProducts && (

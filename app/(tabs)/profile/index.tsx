@@ -121,7 +121,7 @@ const Profile = () => {
       // We clear the state immediately to make it feel instant
       await dispatch(logout()).unwrap();
       router.replace("/(auth)/login");
-    } catch (error: any) {
+    } catch {
       dispatch(logoutAction());
       router.replace("/(auth)/login");
     } finally {

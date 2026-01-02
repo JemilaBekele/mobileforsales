@@ -5,7 +5,7 @@ import * as Yup from "yup";
 import { useRouter } from "expo-router";
 import { useDispatch } from "react-redux";
 import { AppDispatch } from "@/(redux)/store";
-import { login, clearError } from "@/(redux)/authSlice";
+import { login } from "@/(redux)/authSlice";
 import { 
   Card, 
   Text, 
@@ -103,7 +103,7 @@ export default function Login() {
               }} 
             />
             <Text fontSize="$9" fontWeight="bold" color="$gray12">
-              Stock Management
+Sales Management 
             </Text>
           </YStack>
 
@@ -243,11 +243,11 @@ export default function Login() {
           </Card>
 
           {/* Footer */}
-          <YStack alignItems="center" marginTop="$4">
+           <YStack alignItems="center" marginTop="$4">
             <Text color="$gray9" fontSize="$2">
 Sales Management System
             </Text>
-          </YStack>
+          </YStack> 
         </YStack>
       </ScrollView>
     </KeyboardAvoidingView>

@@ -3,7 +3,7 @@ import axios from "axios";
 
 // Base Axios instance
 const apii = axios.create({
-  baseURL: 'http://192.168.1.7:5000/api',
+  baseURL: process.env.EXPO_PUBLIC_API_URL,
   headers: {
     "Content-Type": "application/json", 
   },
@@ -18,7 +18,7 @@ export interface LoginData {
 
 export const loginUser = async (user: LoginData) => {
   try {
-    const response = await apii.post("/login", user);
+    const response = await apii.post("/login/Sales/only", user);
     return response.data;
   } catch (error: any) {
     throw new Error(error.response?.data?.message || "Login failed");

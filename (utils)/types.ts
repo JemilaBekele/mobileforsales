@@ -103,6 +103,7 @@ export interface SellItem {
 }
 
 export interface Sell {
+  status: SaleStatus;
   locked: any;
   id: string;
   invoiceNo: string;
@@ -140,11 +141,12 @@ export interface Sell {
 }
 
 export interface GetAllSellsUserParams {
-  status: any;
-  customerId: any;
+  customerName: any;
+  status?: any;
+  customerId?: any;
   startDate?: string;
   endDate?: string;
-  userId: string;
+  userId?: string;
 }
 
 export interface GetAllSellsUserResponse {

@@ -60,7 +60,7 @@ export default function SubcategoriesScreen() {
   const handleSubCategoryPress = (subCategoryId: string, subCategoryName: string) => {
     // Navigate directly to products page for this subcategory
     router.push({
-      pathname: '/subcategory-products' as any,
+      pathname: '/home/subcategory-products' as any,
       params: {
         subCategoryId,
         subCategoryName,

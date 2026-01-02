@@ -103,7 +103,7 @@ export default function Login() {
               }} 
             />
             <Text fontSize="$9" fontWeight="bold" color="$gray12">
-              Stock Management
+              Sales Management
             </Text>
           </YStack>
 

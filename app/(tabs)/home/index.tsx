@@ -1,6 +1,6 @@
 import { TopSellingProduct } from '@/(services)/api/topSellingProducts';
 import { Category } from '@/(services)/api/catagory';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { 
   Card, 
   Text, 
@@ -14,8 +14,9 @@ import {
 } from 'tamagui';
 import { useRouter } from 'expo-router';
 import { TouchableOpacity } from 'react-native';
-import { useTopSellingStore, selectTopSellingProducts, selectTopSellingProductsLoading, selectTopSellingProductsError } from '@/(store)/useTopSellingStore.ts';
 import { useCategoriesStore, selectCategories, selectCategoriesLoading } from '@/(store)/useCategoriesStore';
+import { useTopSellingProducts } from '@/hooks/useTopSellingProducts';
+import debounce from 'lodash/debounce'; // You'll need to install lodash or create a debounce utility
 
 const BACKEND_URL = "https://ordere.net";
 
@@ -29,43 +30,67 @@ export const normalizeImagePath = (path?: string) => {
   return `${BACKEND_URL}/${cleanPath}`;
 };
 
+// Custom debounce hook
+const useDebounce = (value: string, delay: number) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+    
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+  
+  return debouncedValue;
+};
+
 const TopSellingProductsComponent = () => {
   const router = useRouter();
   
-  // Use Zustand stores with selectors
-  const products = useTopSellingStore(selectTopSellingProducts);
-  const loading = useTopSellingStore(selectTopSellingProductsLoading);
-  const error = useTopSellingStore(selectTopSellingProductsError);
-  const fetchTopSellingProducts = useTopSellingStore((state) => state.fetchTopSellingProducts);
+  // State for filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [visibleProducts, setVisibleProducts] = useState(6);
   
-  // Categories store
+  // Use debounced search term (500ms delay)
+  const debouncedSearchTerm = useDebounce(searchTerm, 500);
+  
+  // Build params object for the query - use debounced search term
+  const params = {
+    ...(debouncedSearchTerm.trim() && { searchTerm: debouncedSearchTerm.trim() }),
+    ...(selectedCategory && { categoryId: selectedCategory }),
+  };
+  
+  // Use React Query hook - ALWAYS FETCH (no enabled condition)
+  const { 
+    data, 
+    isLoading, 
+    isError, 
+    error, 
+    refetch 
+  } = useTopSellingProducts(params);
+  
+  // Extract products from data
+  const products = data?.products || [];
+  const totalCount = data?.count || 0;
+  
+  // Categories store (keeping Zustand for categories)
   const categories = useCategoriesStore(selectCategories);
   const categoriesLoading = useCategoriesStore(selectCategoriesLoading);
   const fetchCategories = useCategoriesStore((state) => state.fetchCategories);
 
-  const [selectedCategory] = useState<string | null>(null);
-  const [visibleProducts, setVisibleProducts] = useState(6);
-  const [searchTerm, setSearchTerm] = useState('');
-
-  // Fetch initial data
+  // Fetch categories on mount
   useEffect(() => {
-    fetchTopSellingProducts({});
     fetchCategories();
-  }, [fetchTopSellingProducts, fetchCategories]);
+  }, [fetchCategories]);
 
   // Handle search button click
   const handleSearchClick = () => {
-    if (searchTerm.trim() !== '') {
-      fetchTopSellingProducts({ 
-        searchTerm: searchTerm.trim(),
-        categoryId: selectedCategory || undefined
-      });
-    } else {
-      fetchTopSellingProducts({ 
-        categoryId: selectedCategory || undefined
-      });
-    }
     setVisibleProducts(6);
+    // No need to refetch - React Query will automatically refetch when params change
   };
 
   // Handle search input change
@@ -76,13 +101,20 @@ const TopSellingProductsComponent = () => {
   // Handle clear search
   const handleClearSearch = () => {
     setSearchTerm('');
-    fetchTopSellingProducts({ 
-      categoryId: selectedCategory || undefined
-    });
+    setSelectedCategory(null);
     setVisibleProducts(6);
+    // No need to manually refetch - React Query handles it
   };
 
-  // Use products directly from backend (no client-side filtering)
+  // Debounced refetch function (only for manual trigger if needed)
+  const debouncedRefetch = useCallback(
+    debounce(() => {
+      refetch();
+    }, 300),
+    [refetch]
+  );
+
+  // Use products directly from API response
   const displayedProducts = products.slice(0, visibleProducts);
 
   const handleCategoryPress = (categoryId: string, categoryName: string) => {
@@ -95,10 +127,17 @@ const TopSellingProductsComponent = () => {
     });
   };
 
+  // Handle category selection for filtering
+  const handleCategorySelect = (categoryId: string) => {
+    setSelectedCategory(categoryId);
+    setVisibleProducts(6);
+    // The hook will automatically refetch when params change
+  };
+
   // Navigate directly to product details page
   const handleViewDetails = (product: TopSellingProduct) => {
     router.push({
-      pathname: '/ProductDetails/[id]' as any,
+      pathname: '/home/ProductDetails/[id]' as any,
       params: { 
         id: product.product.id,
         productId: product.product.id,
@@ -110,22 +149,28 @@ const TopSellingProductsComponent = () => {
     });
   };
 
-  if (loading || categoriesLoading) return (
+  // Check if we have any active filters
+  const hasActiveFilters = debouncedSearchTerm.trim() !== '' || selectedCategory !== null;
+  const isSearching = isLoading && hasActiveFilters;
+
+  // Show loading state only when we have filters and are loading
+  if ((isSearching || categoriesLoading) && (!data || hasActiveFilters)) return (
     <YStack flex={1} justifyContent="center" alignItems="center" backgroundColor="#FFF8F0">
       <Spinner size="large" color="#FF7A00" />
-      <Text marginTop="$4" color="#FF7A00" fontSize="$5" fontWeight="600">Loading Premium Products...</Text>
+      <Text marginTop="$4" color="#FF7A00" fontSize="$5" fontWeight="600">
+        {debouncedSearchTerm || selectedCategory ? 'Searching Products...' : 'Loading Premium Products...'}
+      </Text>
     </YStack>
   );
 
-  if (error) return (
+  if (isError) return (
     <YStack flex={1} justifyContent="center" alignItems="center" padding="$4" backgroundColor="#FFF8F0">
-      <Text color="#FF4444" textAlign="center" fontSize="$5" fontWeight="600">Error: {error}</Text>
+      <Text color="#FF4444" textAlign="center" fontSize="$5" fontWeight="600">
+        Error: {error?.message || 'Failed to load products'}
+      </Text>
       <Button 
         marginTop="$4"
-        onPress={() => fetchTopSellingProducts({ 
-          searchTerm: searchTerm.trim() || undefined,
-          categoryId: selectedCategory || undefined 
-        })}
+        onPress={() => refetch()}
         backgroundColor="#FF7A00"
         borderColor="#FF9B42"
         borderWidth={1}
@@ -175,15 +220,16 @@ const TopSellingProductsComponent = () => {
               shadowOpacity={0.15}
               shadowRadius={8}
               onSubmitEditing={handleSearchClick}
+              returnKeyType="search"
             />
-            {searchTerm ? (
+            {hasActiveFilters ? (
               <Button
                 size="$4"
                 backgroundColor="#FF6B6B"
                 borderRadius="$6"
                 onPress={handleClearSearch}
                 pressStyle={{ backgroundColor: "#FF8E8E" }}
-                disabled={loading}
+                disabled={isLoading}
               >
                 <Text color="white" fontWeight="800">✕</Text>
               </Button>
@@ -194,132 +240,199 @@ const TopSellingProductsComponent = () => {
               borderRadius="$6"
               onPress={handleSearchClick}
               pressStyle={{ backgroundColor: "#FF9B42" }}
-              disabled={loading}
+              disabled={isLoading}
             >
               <Text color="white" fontWeight="800">
-                {loading ? "Searching..." : "Search"}
+                {isLoading ? "..." : "Search"}
               </Text>
             </Button>
           </XStack>
-          {searchTerm && (
+          
+          {/* Active filters indicator */}
+          {hasActiveFilters && (
             <Text fontSize="$3" color="#A65A00" fontWeight="500">
-              Showing results for: &quot;{searchTerm}&quot;
+              {debouncedSearchTerm && selectedCategory 
+                ? `Searching for "${debouncedSearchTerm}" in selected category`
+                : debouncedSearchTerm 
+                  ? `Searching for: "${debouncedSearchTerm}"`
+                  : 'Showing filtered by category'
+              }
+              {totalCount > 0 && ` • ${totalCount} results`}
+            </Text>
+          )}
+          
+          {/* Note from API */}
+          {data?.note && (
+            <Text fontSize="$3" color="#FF7A00" fontWeight="500" fontStyle="italic">
+              {data.note}
             </Text>
           )}
         </YStack>
 
         {/* Categories */}
-        {categories.length > 0 && (
-          <YStack space="$4">
-            <Text fontSize="$6" fontWeight="800" color="#FF7A00">
-              🏷️ Categories
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ paddingRight: 20, gap: 12 }}
-            >
-              <XStack space="$3">
-                {categories.map((category: Category) => (
-                  <Button
-                    key={category.id}
-                    size="$4"
-                    backgroundColor={
-                      selectedCategory === category.id ? "#FF7A00" : "#FFF7F0"
-                    }
-                    borderColor={
-                      selectedCategory === category.id ? "#FF7A00" : "#FFD4A3"
-                    }
-                    borderWidth={2}
-                    borderRadius="$6"
-                    onPress={() => handleCategoryPress(category.id, category.name)}
-                    pressStyle={{
-                      scale: 0.97,
-                      backgroundColor:
-                        selectedCategory === category.id ? "#FF9B42" : "#FFE8D6",
-                    }}
-                    shadowColor="#FFB865"
-                    shadowRadius={8}
-                    shadowOpacity={0.2}
-                  >
-                    <Text
-                      fontWeight="700"
-                      color={
-                        selectedCategory === category.id ? "white" : "#FF7A00"
-                      }
-                    >
-                      {category.name}
-                    </Text>
-                  </Button>
-                ))}
-              </XStack>
-            </ScrollView>
-          </YStack>
-        )}
+     {categories.length > 0 && (
+             <YStack space="$4">
+               <Text fontSize="$6" fontWeight="800" color="#FF7A00">
+                 🏷️ Categories
+               </Text>
+               <ScrollView
+                 horizontal
+                 showsHorizontalScrollIndicator={false}
+                 contentContainerStyle={{ paddingRight: 20, gap: 12 }}
+               >
+                 <XStack space="$3">
+                   {categories.map((category: Category) => (
+                     <Button
+                       key={category.id}
+                       size="$4"
+                       backgroundColor={
+                         selectedCategory === category.id ? "#FF7A00" : "#FFF7F0"
+                       }
+                       borderColor={
+                         selectedCategory === category.id ? "#FF7A00" : "#FFD4A3"
+                       }
+                       borderWidth={2}
+                       borderRadius="$6"
+                       onPress={() => handleCategoryPress(category.id, category.name)}
+                       pressStyle={{
+                         scale: 0.97,
+                         backgroundColor:
+                           selectedCategory === category.id ? "#FF9B42" : "#FFE8D6",
+                       }}
+                       shadowColor="#FFB865"
+                       shadowRadius={8}
+                       shadowOpacity={0.2}
+                     >
+                       <Text
+                         fontWeight="700"
+                         color={
+                           selectedCategory === category.id ? "white" : "#FF7A00"
+                         }
+                       >
+                         {category.name}
+                       </Text>
+                     </Button>
+                   ))}
+                 </XStack>
+               </ScrollView>
+             </YStack>
+           )}
 
         {/* Products Grid */}
         <YStack space="$4">
-          <XStack flexWrap="wrap" justifyContent="space-between" gap="$3">
-            {displayedProducts.map((item: TopSellingProduct, index: number) => (
-              <TouchableOpacity 
-                key={item.product.id} 
-                style={{ width: '48%' }}
-                onPress={() => handleViewDetails(item)}
-              >
-                <YStack width="100%">
-                  <Card
-                    elevate
-                    size="$2"
-                    bordered
-                    borderRadius="$6"
-                    backgroundColor="white"
-                    shadowColor="#FFB865"
-                    shadowOpacity={0.2}
-                    shadowRadius={10}
-                    padding="$3"
+          {products.length > 0 ? (
+            <>
+              <Text fontSize="$5" fontWeight="700" color="#FF7A00">
+                {selectedCategory 
+                  ? `Products in this category (${products.length})`
+                  : debouncedSearchTerm
+                    ? `Search Results (${products.length})`
+                    : `Top Selling Products (${products.length})`
+                }
+              </Text>
+              
+              <XStack flexWrap="wrap" justifyContent="space-between" gap="$3">
+                {displayedProducts.map((item: TopSellingProduct) => (
+                  <TouchableOpacity 
+                    key={item.product.id} 
+                    style={{ width: '48%' }}
+                    onPress={() => handleViewDetails(item)}
                   >
-                    {/* Product Image */}
-                    <YStack alignItems="center" marginBottom="$2">
-                      <Image
-                        source={{ uri: normalizeImagePath(item.product.imageUrl) }}
-                        width={100}
-                        height={100}
-                        borderRadius="$4"
-                        resizeMode="contain"
-                        backgroundColor="#FFF7F0"
-                        borderWidth={1}
-                        borderColor="#FFD4A3"
-                      />
-                    </YStack>
+                    <YStack width="100%">
+                      <Card
+                        elevate
+                        size="$2"
+                        bordered
+                        borderRadius="$6"
+                        backgroundColor="white"
+                        shadowColor="#FFB865"
+                        shadowOpacity={0.2}
+                        shadowRadius={10}
+                        padding="$3"
+                      >
+                        {/* Product Image */}
+                        <YStack alignItems="center" marginBottom="$2">
+                          <Image
+                            source={{ uri: normalizeImagePath(item.product.imageUrl) }}
+                            width={100}
+                            height={100}
+                            borderRadius="$4"
+                            resizeMode="contain"
+                            backgroundColor="#FFF7F0"
+                            borderWidth={1}
+                            borderColor="#FFD4A3"
+                          />
+                        </YStack>
 
-                    {/* Info */}
-                    <YStack space="$1">
-                      <Text fontSize={13} fontWeight="800" color="#333" numberOfLines={2}>
-                        {item.product.name}
-                      </Text>
-                      <Text fontSize={11} color="#A65A00" numberOfLines={1}>
-                        {item.product.productCode}
-                      </Text>
-                      <Text fontSize={11} color="#A65A00" numberOfLines={1}>
-                        {item.product.generic}
-                      </Text>
-                      <XStack justifyContent="space-between" alignItems="center">
-                        <Text fontSize={11} color="#888">
-                          Price:
-                        </Text>
-                        <Text fontSize={13} fontWeight="900" color="#FF7A00">
-                          {formatPrice(item.product.sellPrice)}
-                        </Text>
-                      </XStack>
+                        {/* Info */}
+                        <YStack space="$1">
+                          <Text fontSize={13} fontWeight="800" color="#333" numberOfLines={2}>
+                            {item.product.name}
+                          </Text>
+                          <Text fontSize={11} color="#A65A00" numberOfLines={1}>
+                            {item.product.productCode}
+                          </Text>
+                          {item.product.generic && (
+                            <Text fontSize={11} color="#A65A00" numberOfLines={1}>
+                              {item.product.generic}
+                            </Text>
+                          )}
+                          <XStack justifyContent="space-between" alignItems="center">
+                            <Text fontSize={11} color="#888">
+                              Price:
+                            </Text>
+                            <Text fontSize={13} fontWeight="900" color="#FF7A00">
+                              ${formatPrice(item.product.sellPrice)}
+                            </Text>
+                          </XStack>
+                          
+                          {/* Category badge */}
+                          <XStack justifyContent="flex-start" marginTop="$1">
+                            <Text 
+                              fontSize={10} 
+                              color="#666" 
+                              backgroundColor="#F0F0F0"
+                              paddingHorizontal="$2"
+                              paddingVertical="$1"
+                              borderRadius="$2"
+                            >
+                              {item.product.category.name}
+                            </Text>
+                          </XStack>
+                        </YStack>
+                      </Card>
                     </YStack>
-                  </Card>
-                </YStack>
-              </TouchableOpacity>
-            ))}
-          </XStack>
+                  </TouchableOpacity>
+                ))}
+              </XStack>
+            </>
+          ) : (
+            <YStack alignItems="center" padding="$10" space="$5" backgroundColor="#FFF2E0" borderRadius="$5" borderWidth={1} borderColor="#FFD4A3">
+              <Text fontSize="$6" color="#A65A00" textAlign="center" fontWeight="700">
+                {debouncedSearchTerm 
+                  ? `No products found for "${debouncedSearchTerm}"`
+                  : selectedCategory 
+                    ? 'No products found in this category' 
+                    : 'No top-selling products available at the moment'
+                }
+              </Text>
+              {hasActiveFilters && (
+                <Button 
+                  onPress={handleClearSearch}
+                  backgroundColor="#FF7A00"
+                  borderColor="#FF9B42"
+                  borderWidth={1}
+                  borderRadius="$4"
+                  pressStyle={{ backgroundColor: "#FF9B42" }}
+                >
+                  <Text color="white" fontWeight="600">Clear Filters</Text>
+                </Button>
+              )}
+            </YStack>
+          )}
         </YStack>
 
-        {/* Load More Button */}
+        {/* Load More Button - Only show if we have more products */}
         {products.length > visibleProducts && (
           <YStack alignItems="center" paddingVertical="$5">
             <Button 
@@ -339,20 +452,6 @@ const TopSellingProductsComponent = () => {
                 Load More ({products.length - visibleProducts} remaining)
               </Text>
             </Button>
-          </YStack>
-        )}
-        
-        {/* Empty State */}
-        {products.length === 0 && (
-          <YStack alignItems="center" padding="$10" space="$5" backgroundColor="#FFF2E0" borderRadius="$5" borderWidth={1} borderColor="#FFD4A3">
-            <Text fontSize="$6" color="#A65A00" textAlign="center" fontWeight="700">
-              {searchTerm 
-                ? `No products found for "${searchTerm}"`
-                : selectedCategory 
-                  ? 'No products found in this category' 
-                  : 'No products available at the moment'
-              }
-            </Text>
           </YStack>
         )}
       </YStack>

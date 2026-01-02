@@ -2,6 +2,8 @@ import api from "@/(utils)/config";
 import { Cart, ProductBatch, Shop, UnitOfMeasure, User } from "./CART";
 import { createSelector } from '@reduxjs/toolkit';
 import { Branch, Product } from "./topSellingProducts";
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { AxiosError } from 'axios';
 
 export interface CartItem {
   id: string;
@@ -67,11 +69,11 @@ export interface BulkWaitlistResponse {
     successfulItems: number;
     failedItems: number;
     waitlistItems: WaitlistItem[];
-    errors?: Array<{
+    errors?: {
       cartItemId: string;
       productName: string;
       error: string;
-    }>;
+    }[];
   };
 }
 
@@ -210,6 +212,20 @@ export const initialWaitlistState: WaitlistState = {
 /**
  * Add multiple items to waitlist (bulk operation)
  * REQUIRED: Array of cartItemIds
+ */// Add at the top of your existing file
+
+// ✅ FIXED: Simplified query keys - NO FILTERS
+export const waitlistKeys = {
+  all: ['waitlist'] as const,
+  lists: () => [...waitlistKeys.all, 'list'] as const,
+  detail: (id: string) => [...waitlistKeys.all, 'detail', id] as const,
+  cartItems: (cartId: string) => [...waitlistKeys.all, 'cart', cartId] as const,
+};
+
+// Waitlist API Functions with React Query Hooks
+
+/**
+ * Add multiple items to waitlist (bulk operation)
  */
 export const addItemsToWaitlist = async (waitlistData: AddToWaitlistRequest): Promise<BulkWaitlistResponse> => {
   try {
@@ -234,7 +250,11 @@ export const addItemsToWaitlist = async (waitlistData: AddToWaitlistRequest): Pr
       data: response.data.data || response.data,
     };
   } catch (error: any) {
-    console.error('Error adding to waitlist:', error);
+    // ✅ FIXED: Safe logging
+    if (process.env.NODE_ENV === 'development') {
+      console.error('Error adding to waitlist:', error.message);
+    }
+    
     throw new Error(
       error.response?.data?.message || 
       error.message || 
@@ -244,33 +264,42 @@ export const addItemsToWaitlist = async (waitlistData: AddToWaitlistRequest): Pr
 };
 
 /**
- * Helper function to add cart item to waitlist
- * UPDATED: Removed cartId parameter as it's not needed anymore
+ * React Query hook for adding items to waitlist
  */
-
+export const useAddToWaitlist = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation<BulkWaitlistResponse, AxiosError, AddToWaitlistRequest>({
+    mutationFn: addItemsToWaitlist,
+    onSuccess: (data) => {
+      // ✅ FIXED: Invalidate using the base key
+      queryClient.invalidateQueries({ 
+        queryKey: waitlistKeys.all 
+      });
+      
+      // If cartId is available, invalidate cart-specific queries
+      if (data.data?.waitlistItems?.[0]?.cartId) {
+        const cartId = data.data.waitlistItems[0].cartId;
+        queryClient.invalidateQueries({ 
+          queryKey: waitlistKeys.cartItems(cartId) 
+        });
+      }
+    },
+  });
+};
 
 /**
- * Get current user's waitlists
- * UPDATED: Added proper query parameter handling
+ * Get current user's waitlists - NO FILTERS
  */
-export const getMyWaitlists = async (filters?: { startDate?: string; endDate?: string }): Promise<WaitlistsResponse> => {
+export const getMyWaitlists = async (): Promise<WaitlistsResponse> => {
   try {
-    const params = new URLSearchParams();
+    const response = await api.get("/waitlists/my-waitlists");
     
-    // Add date filters if provided
-    if (filters?.startDate) {
-      params.append('startDate', filters.startDate);
-    }
-    if (filters?.endDate) {
-      params.append('endDate', filters.endDate);
-    }
-    
-    const queryString = params.toString();
-    const url = queryString ? `/waitlists/my-waitlists?${queryString}` : '/waitlists/my-waitlists';
-    
-    const response = await api.get(url);
-    
-    // Return the full response data (which should include count, success, waitlists)
+    // ✅ FIXED: Safe logging
+    // if (process.env.NODE_ENV === 'development') {
+    //   console.log('[Waitlist API] Response received');
+    // }
+    // console.log(response.data)
     return {
       count: response.data.count || response.data.waitlists?.length || 0,
       success: response.data.success !== undefined ? response.data.success : true,
@@ -283,7 +312,35 @@ export const getMyWaitlists = async (filters?: { startDate?: string; endDate?: s
 };
 
 /**
- * Remove item from waitlist - NO CHANGES NEEDED
+ * React Query hook for fetching waitlists - NO FILTERS
+ */
+export const useWaitlists = () => {
+  return useQuery<WaitlistsResponse, AxiosError>({
+    queryKey: waitlistKeys.lists(),
+    queryFn: getMyWaitlists,
+    // Only fetch if we have a user/session
+    enabled: true, // Set based on your authentication state
+    staleTime: 2 * 60 * 1000, // 2 minutes
+    
+    // ✅ IMPROVEMENT: Add select to reduce re-renders
+    select: (data) => ({
+      ...data,
+      // You can transform data here if needed
+    }),
+    
+    // ✅ IMPROVEMENT: Add keepPreviousData for smooth UX    
+    retry: (failureCount, error) => {
+      // Don't retry on 404 or 401 errors
+      if (error.response?.status === 404 || error.response?.status === 401) {
+        return false;
+      }
+      return failureCount < 2;
+    },
+  });
+};
+
+/**
+ * Remove item from waitlist
  */
 export const removeItemFromWaitlist = async (waitlistItemId: string): Promise<MessageResponse> => {
   try {
@@ -294,13 +351,35 @@ export const removeItemFromWaitlist = async (waitlistItemId: string): Promise<Me
       message: response.data.message || "Item removed from waitlist successfully",
     };
   } catch (error: any) {
-    console.error("Error removing item from waitlist:", error.response?.data || error.message);
+    // ✅ FIXED: Safe logging
+    if (process.env.NODE_ENV === 'development') {
+      console.error("Error removing item from waitlist:", error.message);
+    }
+    
     throw new Error(error.response?.data?.message || "Failed to remove item from waitlist");
   }
 };
 
 /**
- * Clear entire waitlist for a cart - NO CHANGES NEEDED
+ * React Query hook for removing item from waitlist
+ */
+export const useRemoveFromWaitlist = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation<MessageResponse, AxiosError, string>({
+    mutationFn: removeItemFromWaitlist,
+    // ✅ FIXED: OPTION A - Use invalidation only (simpler and safer)
+    onSuccess: () => {
+      // Invalidate all waitlist queries
+      queryClient.invalidateQueries({ 
+        queryKey: waitlistKeys.all 
+      });
+    },
+  });
+};
+
+/**
+ * Clear entire waitlist for a cart
  */
 export const clearWaitlist = async (cartId: string): Promise<MessageResponse> => {
   try {
@@ -311,13 +390,39 @@ export const clearWaitlist = async (cartId: string): Promise<MessageResponse> =>
       message: response.data.message || "Waitlist cleared successfully",
     };
   } catch (error: any) {
-    console.error("Error clearing waitlist:", error.response?.data || error.message);
+    // ✅ FIXED: Safe logging
+    if (process.env.NODE_ENV === 'development') {
+      console.error("Error clearing waitlist:", error.message);
+    }
+    
     throw new Error(error.response?.data?.message || "Failed to clear waitlist");
   }
 };
 
 /**
- * Convert waitlist item to cart item - NO CHANGES NEEDED
+ * React Query hook for clearing waitlist
+ */
+export const useClearWaitlist = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation<MessageResponse, AxiosError, string>({
+    mutationFn: clearWaitlist,
+    onSuccess: (data, cartId) => {
+      // ✅ FIXED: Invalidate all waitlist queries
+      queryClient.invalidateQueries({ 
+        queryKey: waitlistKeys.all 
+      });
+      
+      // Also invalidate cart-specific queries
+      queryClient.invalidateQueries({ 
+        queryKey: waitlistKeys.cartItems(cartId) 
+      });
+    },
+  });
+};
+
+/**
+ * Convert waitlist item to cart item
  */
 export const convertWaitlistToCart = async (customerId: string): Promise<ConvertWaitlistResponse> => {
   try {
@@ -330,38 +435,73 @@ export const convertWaitlistToCart = async (customerId: string): Promise<Convert
       message: response.data.message || "Waitlist item successfully added to cart",
     };
   } catch (error: any) {
-    console.error("Error converting waitlist to cart:", error.response?.data || error.message);
+    // ✅ FIXED: Safe logging
+    if (process.env.NODE_ENV === 'development') {
+      console.error("Error converting waitlist to cart:", error.message);
+    }
+    
     throw new Error(error.response?.data?.message || "Failed to convert waitlist to cart");
   }
 };
 
 /**
- * DEPRECATED: Helper function to add product to waitlist
- * This function is no longer supported as we now require cartItemId
- * Keeping it for backward compatibility but it will throw an error
+ * React Query hook for converting waitlist to cart
  */
-
-
-// Utility function to check if waitlist state is properly initialized
-export const isWaitlistStateInitialized = (state: any): boolean => {
-  return state?.waitlist !== undefined;
-};
-
-// Debug helper to log waitlist state
-export const debugWaitlistState = (state: any) => {
+export const useConvertWaitlistToCart = () => {
+  const queryClient = useQueryClient();
   
+  return useMutation<ConvertWaitlistResponse, AxiosError, string>({
+    mutationFn: convertWaitlistToCart,
+    onSuccess: (data, customerId) => {
+      // ✅ FIXED: Invalidate all waitlist queries
+      queryClient.invalidateQueries({ 
+        queryKey: waitlistKeys.all 
+      });
+      
+      // You might also want to invalidate cart queries
+      // queryClient.invalidateQueries({ queryKey: ['cart'] });
+    },
+  });
 };
 
-// NEW: Helper function to check if a cart item can be added to waitlist
-export const canAddToWaitlist = (cartItem: CartItem): boolean => {
-  return Boolean(
-    cartItem &&
-    cartItem.id &&
-    cartItem.cartId   );
+/**
+ * Get waitlist items by cart ID (helper query)
+ */
+export const getWaitlistItemsByCart = async (cartId: string): Promise<WaitlistItem[]> => {
+  try {
+    const response = await api.get(`/waitlists/cart/${cartId}`);
+    return response.data.waitlists || response.data || [];
+  } catch (error: any) {
+    throw new Error(error.response?.data?.message || "Failed to fetch cart waitlist items");
+  }
 };
 
-// NEW: Helper to get waitlist items by cart ID
-export const getWaitlistItemsByCartId = (waitlistItems: WaitlistItem[], cartId: string): WaitlistItem[] => {
-  return waitlistItems.filter(item => item.cartId === cartId);
+/**
+ * React Query hook for fetching waitlist items by cart ID
+ */
+export const useWaitlistItemsByCart = (cartId: string) => {
+  return useQuery<WaitlistItem[], AxiosError>({
+    queryKey: waitlistKeys.cartItems(cartId),
+    queryFn: () => getWaitlistItemsByCart(cartId),
+    enabled: !!cartId,   });
 };
 
+// ✅ Create a separate hook for waitlist items only (for components that just need the list)
+export const useWaitlistItems = () => {
+  return useQuery({
+    queryKey: waitlistKeys.lists(),
+    queryFn: getMyWaitlists,
+    select: (data) => data.waitlists, // Extract only waitlist items
+  });
+};
+
+// Export all hooks
+export const waitlistHooks = {
+  useWaitlists,
+  useWaitlistItems, // New simplified hook
+  useAddToWaitlist,
+  useRemoveFromWaitlist,
+  useClearWaitlist,
+  useConvertWaitlistToCart,
+  useWaitlistItemsByCart,
+};

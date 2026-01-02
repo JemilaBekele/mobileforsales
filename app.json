@@ -1,15 +1,19 @@
 {
   "expo": {
-    "name": "stockmanagement",
-    "slug": "stockmanagement",
+    "name": "sales",
+    "slug": "sales",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "stockmanagement",
+    "scheme": "sales",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.abase.sales",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -45,12 +49,12 @@
       "typedRoutes": true,
       "reactCompiler": true
     },
+    "owner": "abase",
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "112ed45f-a01a-44b6-b1f1-1b67dd277829"
+        "projectId": "21fe229b-60cd-4dde-93f2-84897ca08a22"
       }
-    },
-    "owner": "jemila_bekele"
+    }
   }
 }

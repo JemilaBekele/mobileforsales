@@ -10,6 +10,24 @@ const HomeLayout = () => {
                     headerShown: false,
                 }}
             />
+                 <Stack.Screen
+                name="subcategories"
+                options={{
+                    headerShown: false,
+                }}
+            />
+                 <Stack.Screen
+                name="subcategory-products"
+                options={{
+                    headerShown: false,
+                }}
+            />
+               <Stack.Screen
+                name="ProductDetails"
+                options={{
+                    headerShown: false,
+                }}
+            />
     
     
           

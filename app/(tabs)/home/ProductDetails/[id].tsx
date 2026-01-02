@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react'; 
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useState } from 'react'; 
+import { useDispatch } from 'react-redux';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   Alert,
@@ -23,33 +23,28 @@ import {
   Input,
 } from 'tamagui';
 import type { AppDispatch } from '@/(redux)/store';
+import { useQuery } from '@tanstack/react-query';
 
-// Redux imports
-import {
-  fetchProductBatchesByShopsForUser,
-  selectProductBatchesLoading,
-  selectProductBatchesError,
-  selectSortedShops,
-  selectHasStock,
-} from '@/(redux)/productBatches';
-
+// Redux imports for cart
 import {
   addItemToUserCart,
   fetchMyCart,
 } from '@/(redux)/CART';
+
+// Import the API service
+import { 
+  getProductBatchesByShopsForUser,
+  ShopBatchInfo,
+  AdditionalPrice,
+  ProductBatchesForUserResponse 
+} from '@/(services)/api/productBatchesService';
 
 // Types
 interface PriceOption {
   id: string;
   label: string;
   price: number;
-  type?: 'default' | 'additional' | 'custom'; // Make optional
-}
-
-interface AdditionalPrice {
-  id: string;
-  label: string;
-  price: number;
+  type?: 'default' | 'additional' | 'custom';
 }
 
 interface SelectedShopInfo {
@@ -70,7 +65,6 @@ export const normalizeImagePath = (path?: string) => {
   if (normalizedPath.startsWith('http')) {
     return normalizedPath;
   }
-  // Remove any leading slashes to prevent double slashes in URL
   const cleanPath = normalizedPath.replace(/^\/+/, '');
   return `${BACKEND_URL}/${cleanPath}`;
 };
@@ -87,7 +81,6 @@ const safeNumber = (value: any): number => {
   return isNaN(num) ? 0 : num;
 };
 
-// Price Selection Modal
 // Price Selection Modal
 const PriceSelectionModal = ({ 
   selectedShop, 
@@ -110,10 +103,10 @@ const PriceSelectionModal = ({
   const [selectedPriceOption, setSelectedPriceOption] = useState<PriceOption | null>(initialPriceOption);
   const [customPrice, setCustomPrice] = useState(initialPriceOption?.price?.toString() || '');
   const [quantityInput, setQuantityInput] = useState<string>(''); // Changed to string for empty state
-  const [notes, setNotes] = useState('');
+  const [notes, ] = useState('');
 
   // Set initial selected price option if provided
-  useEffect(() => {
+  React.useEffect(() => {
     if (initialPriceOption) {
       setSelectedPriceOption(initialPriceOption);
       setCustomPrice(initialPriceOption.price.toString());
@@ -407,8 +400,6 @@ const PriceSelectionModal = ({
                   🛒 Add to Cart
                 </Text>
               </Button>
-
-        
             </YStack>
           </ScrollView>
         </YStack>
@@ -427,24 +418,32 @@ const ProductDetailScreen = () => {
   const productName = params.productName as string;
   const productImage = params.productImage as string;
 
-  // Redux state
-  const shops = useSelector(selectSortedShops);
-  const hasStock = useSelector(selectHasStock);
-  const batchesLoading = useSelector(selectProductBatchesLoading);
-  const batchesError = useSelector(selectProductBatchesError);
-
   // Local state
   const [selectedShopForModal, setSelectedShopForModal] = useState<SelectedShopInfo | null>(null);
   const [selectedPriceOption, setSelectedPriceOption] = useState<PriceOption | null>(null);
   const [showPriceModal, setShowPriceModal] = useState(false);
 
-  // Load product batches data
-  useEffect(() => {
-    if (productId) {
-      dispatch(fetchProductBatchesByShopsForUser(productId));
-    }
+  // Use React Query to fetch product batches
+  const {
+    data: batchesData,
+    isLoading: batchesLoading,
+    error: batchesError,
+    refetch: refetchBatches,
+  } = useQuery<ProductBatchesForUserResponse>({
+    queryKey: ['product-batches', productId],
+    queryFn: () => getProductBatchesByShopsForUser(productId),
+    enabled: !!productId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Extract data from response
+  const shops = batchesData?.batches?.shops || [];
+  const hasStock = batchesData?.batches?.hasStock || false;
+
+  // Load cart data
+  React.useEffect(() => {
     dispatch(fetchMyCart());
-  }, [dispatch, productId]);
+  }, [dispatch]);
 
   const handleOpenPriceModal = (shop: SelectedShopInfo, priceOption?: PriceOption) => {
     setSelectedShopForModal(shop);
@@ -481,7 +480,7 @@ const ProductDetailScreen = () => {
         [
           {
             text: 'Continue Shopping',
-            onPress: () => router.push('/' as any),
+            onPress: () => router.push('/home' as any),
           }
         ]
       );
@@ -525,11 +524,11 @@ const ProductDetailScreen = () => {
     return (
       <YStack flex={1} justifyContent="center" alignItems="center" padding="$4" backgroundColor="$orange1">
         <Text color="$red10" textAlign="center" fontSize="$5" fontWeight="600">
-          Error: {batchesError}
+          Error: {(batchesError as Error).message || 'Failed to load product batches'}
         </Text>
         <Button 
           marginTop="$4"
-          onPress={() => dispatch(fetchProductBatchesByShopsForUser(productId))}
+          onPress={() => refetchBatches()}
           backgroundColor="$orange9"
           borderColor="$orange10"
           borderWidth={1}
@@ -541,6 +540,10 @@ const ProductDetailScreen = () => {
       </YStack>
     );
   }
+
+  const handleBack = () => {
+    router.back();
+  };
 
   if (!hasStock) {
     return (
@@ -560,6 +563,19 @@ const ProductDetailScreen = () => {
       <ScrollView flex={1} showsVerticalScrollIndicator={false}>
         <YStack space="$4" padding="$4">
           {/* Product Header */}
+          <Button 
+            onPress={handleBack}
+            alignSelf="flex-start"
+            size="$3"
+            backgroundColor="$orange2"
+            borderColor="$orange5"
+            borderWidth={1}
+            borderRadius="$3"
+            marginBottom="$2"
+          >
+            <Text color="$orange11" fontWeight="600">← Back </Text>
+          </Button>
+          
           <Card 
             elevate 
             size="$4" 
@@ -594,7 +610,7 @@ const ProductDetailScreen = () => {
           <YStack space="$3">
             <H4 fontWeight="bold">Available Shops</H4>
 
-            {shops.map((shop: SelectedShopInfo) => {
+            {shops.map((shop: ShopBatchInfo) => {
               const shopPriceOptions: PriceOption[] = [
                 {
                   id: "base",
@@ -624,9 +640,6 @@ const ProductDetailScreen = () => {
                   </XStack>
 
                   <YStack space="$2" mt="$2">
-                    {/* Base Price */}
-                  
-
                     {/* Additional Price Options */}
                     {shopPriceOptions.slice(1).map((p) => (
                       <Button
